@@ -30,12 +30,23 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Przygotowanie platformy Android
+      - name: Przygotowanie platformy Android i zgodności JVM
         run: |
           # Jeśli w repozytorium brakuje otoczki Gradle/Android, Flutter wygeneruje ją automatycznie
           if [ ! -f "android/build.gradle" ] || [ ! -f "android/settings.gradle" ]; then
             echo "Inicjalizacja brakującej otoczki Android..."
             flutter create . --platforms=android --org=com.example --project-name=medplaner
+          fi
+
+          # Wymuszenie zgodności wersji JVM (Java 17 i Kotlin JVM target 17)
+          mkdir -p android
+          echo "kotlin.jvm.target.validation.mode=warning" >> android/gradle.properties
+
+          if [ -f "android/app/build.gradle" ]; then
+            sed -i "s/jvmTarget = '1.8'/jvmTarget = '17'/g" android/app/build.gradle
+            sed -i 's/jvmTarget = "1.8"/jvmTarget = "17"/g' android/app/build.gradle
+            sed -i "s/JavaVersion.VERSION_1_8/JavaVersion.VERSION_17/g" android/app/build.gradle
+            sed -i "s/JavaVersion.VERSION_11/JavaVersion.VERSION_17/g" android/app/build.gradle
           fi
 
       - name: Pobranie zależności Flutter (pub get)
