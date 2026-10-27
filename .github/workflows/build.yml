@@ -1,4 +1,6 @@
-name: Build Flutter APK
+- name: Build APK Release
+  run: flutter build apk --release --verbose
+  
 
 on:
   push:
