@@ -37,17 +37,18 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
 
       - name: Konfiguracja Flutter SDK
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          cache: true
-          cache-key: 'flutter-:os:-:channel:-:version:-:arch:-:hash:'
 
-      - name: Sprawdzenie srodowiska Flutter (doctor)
-        run: flutter doctor -v
+      - name: Weryfikacja struktury Androida
+        run: |
+          if [ ! -f "android/build.gradle" ] || [ ! -f "android/settings.gradle" ]; then
+            echo "Inicjalizacja otoczki platformy Android..."
+            flutter create . --platforms=android --org=com.example --project-name=medplaner
+          fi
 
       - name: Pobranie zaleznosci (pub get)
         run: flutter pub get
