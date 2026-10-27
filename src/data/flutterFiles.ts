@@ -194,7 +194,7 @@ if (flutterVersionName == null) {
 
 android {
     namespace "com.example.medplaner"
-    compileSdkVersion 34
+    compileSdkVersion 36
     ndkVersion flutter.ndkVersion
 
     compileOptions {
@@ -210,7 +210,7 @@ android {
     defaultConfig {
         applicationId "com.example.medplaner"
         minSdkVersion 21
-        targetSdkVersion 34
+        targetSdkVersion 36
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
         multiDexEnabled true
