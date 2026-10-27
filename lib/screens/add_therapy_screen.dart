@@ -65,7 +65,16 @@ class _AddTherapyScreenState extends State<AddTherapyScreen> {
 
     await DatabaseService.instance.insertTherapy(therapy);
     if (mounted) {
-      Navigator.pop(context, true);
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context, true);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✓ Zapisano terapię: ${therapy.name}'),
+            backgroundColor: Colors.teal.shade700,
+          ),
+        );
+      }
     }
   }
 

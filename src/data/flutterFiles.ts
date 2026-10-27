@@ -2241,7 +2241,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
 import 'package:intl/date_symbol_data_local.dart';
 import 'screens/home_screen.dart';
 import 'screens/calendar_screen.dart';
-import 'screens/add_therapy_screen.dart';
+import 'screens/therapies_screen.dart';
 import 'services/database_service.dart';
 import 'services/notification_service.dart';
 
@@ -2297,7 +2297,7 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
   final List<Widget> _screens = const [
     HomeScreen(),
     CalendarScreen(),
-    AddTherapyScreen(),
+    TherapiesScreen(),
   ];
 
   @override

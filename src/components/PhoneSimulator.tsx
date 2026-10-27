@@ -14,7 +14,10 @@ import {
   CheckCircle2,
   Filter,
   ShieldCheck,
-  RotateCcw
+  RotateCcw,
+  Sun,
+  SunMedium,
+  Moon
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { 
@@ -273,130 +276,186 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                       </p>
                     </div>
                   ) : (
-                    displayedDoses.map((dose) => {
-                      const isTaken = dose.status === 'taken';
-                      const isSnoozed = dose.status === 'snoozed';
-                      const isSkipped = dose.status === 'skipped';
+                    (() => {
+                      const morning = displayedDoses.filter((d) => (d.status === 'snoozed' && d.snoozedUntil ? d.snoozedUntil : d.time) < '12:00');
+                      const afternoon = displayedDoses.filter((d) => {
+                        const t = d.status === 'snoozed' && d.snoozedUntil ? d.snoozedUntil : d.time;
+                        return t >= '12:00' && t < '18:00';
+                      });
+                      const evening = displayedDoses.filter((d) => (d.status === 'snoozed' && d.snoozedUntil ? d.snoozedUntil : d.time) >= '18:00');
 
-                      return (
-                        <div
-                          key={dose.id}
-                          className={`bg-white rounded-2xl border p-3.5 transition-all shadow-2xs ${
-                            isTaken
-                              ? 'border-emerald-100 bg-emerald-50/20'
-                              : isSnoozed
-                              ? 'border-amber-200 bg-amber-50/20'
-                              : 'border-slate-200/80 hover:border-teal-200'
-                          }`}
-                        >
-                          <div className="flex items-start gap-3">
-                            {/* Time Badge */}
-                            <div
-                              className={`flex flex-col items-center justify-center w-14 py-2 rounded-xl text-center shrink-0 border ${
-                                isTaken
-                                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                                  : isSnoozed
-                                  ? 'bg-amber-100 border-amber-300 text-amber-900 animate-pulse'
-                                  : 'bg-slate-50 border-slate-200 text-slate-800'
-                              }`}
-                            >
-                              <Clock className="w-3.5 h-3.5 mb-0.5 text-slate-500" />
-                              <span className="font-extrabold text-sm leading-tight">
-                                {isSnoozed && dose.snoozedUntil ? dose.snoozedUntil : dose.time}
+                      const renderGroup = (
+                        title: string,
+                        items: typeof displayedDoses,
+                        icon: React.ReactNode,
+                        badgeClass: string,
+                        containerClass: string,
+                        titleColor: string
+                      ) => {
+                        if (items.length === 0) return null;
+                        const takenCount = items.filter((d) => d.status === 'taken').length;
+
+                        return (
+                          <div className={`rounded-2xl p-3 border space-y-2.5 transition-all ${containerClass}`}>
+                            <div className="flex items-center justify-between px-1">
+                              <div className={`flex items-center gap-1.5 font-extrabold text-2xs uppercase tracking-wider ${titleColor}`}>
+                                {icon}
+                                <span>{title}</span>
+                              </div>
+                              <span className={`text-3xs font-bold px-2 py-0.5 rounded-full ${badgeClass}`}>
+                                {takenCount}/{items.length} wzięte
                               </span>
-                              {isSnoozed && (
-                                <span className="text-3xs font-bold text-amber-700 mt-0.5">
-                                  odroczona
-                                </span>
-                              )}
                             </div>
 
-                            {/* Details */}
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
-                                <span
-                                  className="w-2.5 h-2.5 rounded-full shrink-0"
-                                  style={{ backgroundColor: dose.therapyColor }}
-                                />
-                                <span className="text-2xs font-semibold text-slate-500 truncate">
-                                  {dose.therapyName}
-                                </span>
+                            <div className="space-y-2">
+                              {items.map((dose) => {
+                                const isTaken = dose.status === 'taken';
+                                const isSnoozed = dose.status === 'snoozed';
+                                const isSkipped = dose.status === 'skipped';
 
-                                {/* Status Tag */}
-                                <span
-                                  className={`ml-auto text-3xs font-extrabold px-2 py-0.5 rounded-full border ${
-                                    isTaken
-                                      ? 'bg-emerald-100 border-emerald-200 text-emerald-800'
-                                      : isSnoozed
-                                      ? 'bg-amber-100 border-amber-300 text-amber-900'
-                                      : isSkipped
-                                      ? 'bg-rose-100 border-rose-200 text-rose-800'
-                                      : 'bg-slate-100 border-slate-200 text-slate-700'
-                                  }`}
-                                >
-                                  {isTaken
-                                    ? `Wzięte o ${dose.takenAt || dose.time}`
-                                    : isSnoozed
-                                    ? `Odroczone do ${dose.snoozedUntil}`
-                                    : isSkipped
-                                    ? 'Pominięte'
-                                    : 'Oczekuje'}
-                                </span>
-                              </div>
+                                return (
+                                  <div
+                                    key={dose.id}
+                                    className={`bg-white rounded-xl border p-3 transition-all shadow-2xs ${
+                                      isTaken
+                                        ? 'border-emerald-100 bg-emerald-50/30'
+                                        : isSnoozed
+                                        ? 'border-amber-200 bg-amber-50/30'
+                                        : 'border-slate-200/80 hover:border-teal-200'
+                                    }`}
+                                  >
+                                    <div className="flex items-start gap-2.5">
+                                      <div
+                                        className={`flex flex-col items-center justify-center w-12 py-1.5 rounded-lg text-center shrink-0 border ${
+                                          isTaken
+                                            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                                            : isSnoozed
+                                            ? 'bg-amber-100 border-amber-300 text-amber-900 animate-pulse'
+                                            : 'bg-slate-50 border-slate-200 text-slate-800'
+                                        }`}
+                                      >
+                                        <Clock className="w-3 h-3 mb-0.5 text-slate-400" />
+                                        <span className="font-extrabold text-xs leading-tight">
+                                          {isSnoozed && dose.snoozedUntil ? dose.snoozedUntil : dose.time}
+                                        </span>
+                                      </div>
 
-                              <h3
-                                className={`font-bold text-sm leading-snug truncate ${
-                                  isTaken ? 'line-through text-slate-400' : 'text-slate-900'
-                                }`}
-                              >
-                                {dose.medicationName}
-                              </h3>
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-1 mb-0.5 flex-wrap">
+                                          <span
+                                            className="w-2 h-2 rounded-full shrink-0"
+                                            style={{ backgroundColor: dose.therapyColor }}
+                                          />
+                                          <span className="text-3xs font-semibold text-slate-500 truncate">
+                                            {dose.therapyName}
+                                          </span>
+                                          <span
+                                            className={`ml-auto text-3xs font-extrabold px-1.5 py-0.2 rounded-full border ${
+                                              isTaken
+                                                ? 'bg-emerald-100 border-emerald-200 text-emerald-800'
+                                                : isSnoozed
+                                                ? 'bg-amber-100 border-amber-300 text-amber-900'
+                                                : isSkipped
+                                                ? 'bg-rose-100 border-rose-200 text-rose-800'
+                                                : 'bg-slate-100 border-slate-200 text-slate-700'
+                                            }`}
+                                          >
+                                            {isTaken
+                                              ? `Wzięte o ${dose.takenAt || dose.time}`
+                                              : isSnoozed
+                                              ? `Odroczone`
+                                              : isSkipped
+                                              ? 'Pominięte'
+                                              : 'Oczekuje'}
+                                          </span>
+                                        </div>
 
-                              <div className="flex items-center gap-2 mt-1 text-xs text-slate-600">
-                                <span className="font-bold text-teal-800 bg-teal-50 px-1.5 py-0.5 rounded-md text-2xs">
-                                  {formatDoseDisplay(dose.doseAmount, dose.type)}
-                                </span>
-                                {dose.instructions && (
-                                  <span className="text-2xs text-slate-500 truncate italic">
-                                    • {dose.instructions}
-                                  </span>
-                                )}
-                              </div>
+                                        <h4
+                                          className={`font-bold text-xs leading-tight truncate ${
+                                            isTaken ? 'line-through text-slate-400' : 'text-slate-900'
+                                          }`}
+                                        >
+                                          {dose.medicationName}
+                                        </h4>
+
+                                        <div className="flex items-center gap-1.5 mt-0.5 text-2xs text-slate-600">
+                                          <span className="font-bold text-teal-800 bg-teal-50 px-1 py-0.2 rounded text-3xs">
+                                            {formatDoseDisplay(dose.doseAmount, dose.type)}
+                                          </span>
+                                          {dose.instructions && (
+                                            <span className="text-3xs text-slate-500 truncate italic">
+                                              • {dose.instructions}
+                                            </span>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    {!isTaken && (
+                                      <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center gap-1.5">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleTakeDoseWithFeedback(dose.id)}
+                                          className="flex-1 py-1 px-2.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold text-2xs flex items-center justify-center gap-1 transition-all shadow-xs active:scale-95"
+                                        >
+                                          <Check className="w-3 h-3" />
+                                          Wziąłem
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => setSnoozeDoseTarget(dose)}
+                                          className="py-1 px-2.5 rounded-lg bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-900 font-bold text-2xs flex items-center justify-center gap-1 transition-all"
+                                        >
+                                          <Clock className="w-3 h-3 text-amber-700" />
+                                          Odłóż
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => onSkipDose(dose.id)}
+                                          className="py-1 px-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 text-3xs font-semibold"
+                                          title="Pomiń dawkę"
+                                        >
+                                          Pomiń
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
                           </div>
+                        );
+                      };
 
-                          {/* Quick Actions (Wziąłem / Odłóż / Pomiń) */}
-                          {!isTaken && (
-                            <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => handleTakeDoseWithFeedback(dose.id)}
-                                className="flex-1 py-1.5 px-3 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs active:scale-95"
-                              >
-                                <Check className="w-3.5 h-3.5" />
-                                Wziąłem
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setSnoozeDoseTarget(dose)}
-                                className="py-1.5 px-3 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-900 font-bold text-xs flex items-center justify-center gap-1 transition-all"
-                              >
-                                <Clock className="w-3.5 h-3.5 text-amber-700" />
-                                Odłóż
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => onSkipDose(dose.id)}
-                                className="py-1.5 px-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 text-2xs font-semibold transition-colors"
-                                title="Pomiń dawkę"
-                              >
-                                Pomiń
-                              </button>
-                            </div>
+                      return (
+                        <div className="space-y-3">
+                          {renderGroup(
+                            'Rano (do 12:00)',
+                            morning,
+                            <SunMedium className="w-3.5 h-3.5 text-amber-600" />,
+                            'bg-amber-100 text-amber-800',
+                            'bg-amber-500/10 border-amber-200/70',
+                            'text-amber-800'
+                          )}
+                          {renderGroup(
+                            'Popołudnie (12:00 - 18:00)',
+                            afternoon,
+                            <Sun className="w-3.5 h-3.5 text-sky-600" />,
+                            'bg-sky-100 text-sky-800',
+                            'bg-sky-500/10 border-sky-200/70',
+                            'text-sky-800'
+                          )}
+                          {renderGroup(
+                            'Wieczór i Noc (od 18:00)',
+                            evening,
+                            <Moon className="w-3.5 h-3.5 text-indigo-600" />,
+                            'bg-indigo-100 text-indigo-800',
+                            'bg-indigo-500/10 border-indigo-200/70',
+                            'text-indigo-800'
                           )}
                         </div>
                       );
-                    })
+                    })()
                   )}
                 </div>
               </>
