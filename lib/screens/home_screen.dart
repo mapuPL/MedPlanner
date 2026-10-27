@@ -63,7 +63,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       Text('$taken z $total dawek przyjęte',
                           style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 10),
-                      LinearProgressIndicator(value: progress, backgroundColor: Colors.teal.shade950, color: Colors.greenAccent),
+                      LinearProgressIndicator(value: progress, backgroundColor: Colors.teal.shade900, color: Colors.greenAccent),
                     ],
                   ),
                 ),

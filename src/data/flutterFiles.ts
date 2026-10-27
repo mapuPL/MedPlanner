@@ -1351,7 +1351,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             value: progress,
                             minHeight: 8,
                             backgroundColor: Colors.teal.shade900,
-                            valueColor: const AlwaysStoppedAnimation<Color>(Colors.emeraldAccent),
+                            valueColor: const AlwaysStoppedAnimation<Color>(Colors.greenAccent),
                           ),
                         ),
                       ],
