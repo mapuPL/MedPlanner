@@ -3,36 +3,51 @@ name: Build Android APK
 on:
   push:
     branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
+    name: Build Flutter Android APK
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Pobierz kod repozytorium (Checkout)
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: Konfiguracja Java (JDK 17)
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
+          distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Flutter
+      - name: Konfiguracja Flutter SDK
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.x'
           channel: 'stable'
 
-      - name: Install dependencies
+      - name: Przygotowanie platformy Android
+        run: |
+          # Jeśli w repozytorium brakuje otoczki Gradle/Android, Flutter wygeneruje ją automatycznie
+          if [ ! -f "android/build.gradle" ] || [ ! -f "android/settings.gradle" ]; then
+            echo "Inicjalizacja brakującej otoczki Android..."
+            flutter create . --platforms=android --org=com.example --project-name=medplaner
+          fi
+
+      - name: Pobranie zależności Flutter (pub get)
         run: flutter pub get
 
-      - name: Build APK Release
+      - name: Budowanie pliku APK Release
         run: flutter build apk --release --verbose
 
-      - name: Upload APK Artifact
+      - name: Zapisz plik APK jako artefakt
         uses: actions/upload-artifact@v4
         with:
           name: medplaner-release-apk
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14

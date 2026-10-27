@@ -2,5 +2,7 @@
   "name": "MedPlaner - Dawkowanie Leków & Flutter Project Hub",
   "description": "Kompletna aplikacja mobilna Flutter i interaktywny symulator do zarządzania terapiami medycznymi, elastycznego dawkowania leków, odroczeń (snooze) i budowania pliku APK w Google Project IDX.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
