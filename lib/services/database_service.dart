@@ -82,6 +82,23 @@ class DatabaseService {
     await db.insert('therapies', therapy.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
+  Future<void> updateTherapy(Therapy therapy) async {
+    final db = await database;
+    await db.update(
+      'therapies',
+      therapy.toMap(),
+      where: 'id = ?',
+      whereArgs: [therapy.id],
+    );
+  }
+
+  Future<void> deleteTherapy(String id) async {
+    final db = await database;
+    await db.delete('therapies', where: 'id = ?', whereArgs: [id]);
+    await db.delete('medications', where: 'therapy_id = ?', whereArgs: [id]);
+    await db.delete('dose_logs', where: 'therapy_id = ?', whereArgs: [id]);
+  }
+
   Future<List<Therapy>> getTherapies({bool activeOnly = false}) async {
     final db = await database;
     final where = activeOnly ? 'is_active = 1' : null;
@@ -92,6 +109,18 @@ class DatabaseService {
   Future<void> insertMedication(Medication medication) async {
     final db = await database;
     await db.insert('medications', medication.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> deleteMedication(String id) async {
+    final db = await database;
+    await db.delete('medications', where: 'id = ?', whereArgs: [id]);
+    await db.delete('dose_logs', where: 'medication_id = ?', whereArgs: [id]);
+  }
+
+  Future<List<Medication>> getMedicationsForTherapy(String therapyId) async {
+    final db = await database;
+    final maps = await db.query('medications', where: 'therapy_id = ?', whereArgs: [therapyId]);
+    return maps.map((m) => Medication.fromMap(m)).toList();
   }
 
   Future<List<Medication>> getAllMedications() async {

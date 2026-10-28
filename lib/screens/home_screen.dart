@@ -211,7 +211,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   title,
                   style: TextStyle(
                     fontSize: 13,
-                    fontWeight: FontWeight.extrabold,
+                    fontWeight: FontWeight.w800,
                     color: iconColor,
                     letterSpacing: 0.5,
                   ),
