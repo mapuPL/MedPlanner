@@ -3,6 +3,7 @@ import 'package:uuid/uuid.dart';
 import '../models/therapy.dart';
 import '../models/medication.dart';
 import '../services/database_service.dart';
+import '../services/medication_registry_service.dart';
 import 'add_therapy_screen.dart';
 
 class AddMedicationScreen extends StatefulWidget {
@@ -29,7 +30,12 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
     const TimeOfDay(hour: 20, minute: 0),
   ];
 
-  List<int> _selectedDays = [1, 2, 3, 4, 5, 6, 7];
+  final List<int> _selectedDays = [1, 2, 3, 4, 5, 6, 7];
+
+  // Baza leków URPL / NFZ - sugestie wyszukiwania
+  List<RegisteredMedicine> _suggestions = [];
+  RegisteredMedicine? _selectedRegistryItem;
+  bool _showSuggestions = false;
 
   @override
   void initState() {
@@ -37,13 +43,69 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
     _loadTherapies();
   }
 
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _doseAmountController.dispose();
+    _instructionsController.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadTherapies() async {
     final list = await DatabaseService.instance.getTherapies(activeOnly: true);
     setState(() {
       _therapies = list;
-      if (list.isNotEmpty) {
+      if (list.isNotEmpty && _selectedTherapyId == null) {
         _selectedTherapyId = list.first.id;
       }
+    });
+  }
+
+  void _onNameChanged(String val) {
+    if (val.trim().length >= 2) {
+      final results = MedicationRegistryService.instance.search(val.trim(), limit: 6);
+      setState(() {
+        _suggestions = results;
+        _showSuggestions = true;
+      });
+    } else {
+      setState(() {
+        _suggestions = [];
+        _showSuggestions = false;
+      });
+    }
+  }
+
+  void _selectMedicine(RegisteredMedicine med) {
+    setState(() {
+      _nameController.text = med.name;
+      _selectedRegistryItem = med;
+      _showSuggestions = false;
+      _suggestions = [];
+
+      // Automatyczne podpowiadanie postaci, dawki i instrukcji
+      _selectedType = MedicationType.fromString(med.defaultType);
+      _doseAmountController.text = med.defaultDose;
+      if (med.instructions.isNotEmpty) {
+        _instructionsController.text = med.instructions;
+      }
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Uzupełniono dane leku: ${med.name}'),
+        duration: const Duration(seconds: 2),
+        backgroundColor: Colors.teal.shade800,
+      ),
+    );
+  }
+
+  void _useCustomMedicineName(String customName) {
+    setState(() {
+      _nameController.text = customName.trim();
+      _selectedRegistryItem = null;
+      _showSuggestions = false;
+      _suggestions = [];
     });
   }
 
@@ -103,6 +165,8 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final queryText = _nameController.text.trim();
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Dodaj Lek do Terapii'),
@@ -112,6 +176,7 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
+            // Wybór Terapii
             Row(
               children: [
                 Expanded(
@@ -140,16 +205,152 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
               ],
             ),
             const SizedBox(height: 16),
+
+            // Wyszukiwarka leków z bazy URPL / NFZ z autouzupełnianiem
             TextFormField(
               controller: _nameController,
-              decoration: const InputDecoration(
+              onChanged: _onNameChanged,
+              decoration: InputDecoration(
                 labelText: 'Nazwa Leku *',
-                hintText: 'np. Amotaks, Krople Hyabak, Ventolin',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.medication),
+                hintText: 'Wpisz np. Paracetamol, Amotaks, Ventolin...',
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.medication, color: Colors.teal),
+                suffixIcon: _nameController.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear, size: 18),
+                        onPressed: () {
+                          _nameController.clear();
+                          setState(() {
+                            _selectedRegistryItem = null;
+                            _showSuggestions = false;
+                            _suggestions = [];
+                          });
+                        },
+                      )
+                    : null,
               ),
               validator: (v) => (v == null || v.trim().isEmpty) ? 'Wprowadź nazwę leku' : null,
             ),
+
+            // Karta informacyjna o wybranym leku z bazy
+            if (_selectedRegistryItem != null) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.teal.shade50,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.teal.shade200),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.verified, size: 18, color: Colors.teal.shade700),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Oficjalna baza URPL / NFZ: ${_selectedRegistryItem!.substance}',
+                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.teal.shade900),
+                          ),
+                          Text(
+                            'Kategoria: ${_selectedRegistryItem!.category}',
+                            style: TextStyle(fontSize: 11, color: Colors.teal.shade700),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, size: 16),
+                      tooltip: 'Wyczyść powiązanie',
+                      onPressed: () => setState(() => _selectedRegistryItem = null),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            // Lista podpowiedzi wyszukiwania z bazy leków
+            if (_showSuggestions && queryText.length >= 2) ...[
+              const SizedBox(height: 8),
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.teal.shade100),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.06),
+                      blurRadius: 8,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      child: Row(
+                        children: [
+                          Icon(Icons.library_books, size: 14, color: Colors.teal.shade700),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Podpowiedzi z rejestru leków (${_suggestions.length}):',
+                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.teal.shade800),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    if (_suggestions.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Text(
+                          'Brak leku w urzędowym spisie dla "$queryText".',
+                          style: TextStyle(fontSize: 13, color: Colors.grey.shade600, fontStyle: FontStyle.italic),
+                        ),
+                      )
+                    else
+                      ..._suggestions.map((item) {
+                        return ListTile(
+                          dense: true,
+                          title: Text(item.name, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                          subtitle: Text(
+                            '${item.substance} • ${item.category} (domyślnie: ${item.defaultDose})',
+                            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                          ),
+                          trailing: const Icon(Icons.arrow_forward_ios, size: 14, color: Colors.teal),
+                          onTap: () => _selectMedicine(item),
+                        );
+                      }),
+                    // Koło ratunkowe – dodawanie własnego leku
+                    const Divider(height: 1),
+                    InkWell(
+                      onTap: () => _useCustomMedicineName(queryText),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        color: Colors.grey.shade50,
+                        child: Row(
+                          children: [
+                            const Icon(Icons.add_circle_outline, size: 18, color: Colors.teal),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                '+ Użyj "$queryText" jako własny lek (spoza bazy)',
+                                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.teal),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
             const SizedBox(height: 16),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,

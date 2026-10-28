@@ -164,3 +164,40 @@ test('calculateCompliance and isTherapyCompletedForDate report correct values', 
   assert.equal(isTherapyCompletedForDate(doses, 't1'), true, 'Therapy 1 has all taken');
   assert.equal(isTherapyCompletedForDate(doses, 't2'), false, 'Therapy 2 has pending dose');
 });
+
+test('searchMedicines supports Polish diacritics, case-insensitivity, and substances', async () => {
+  const { searchMedicines, normalizePolishText, POLISH_MEDICATIONS_REGISTRY } = await import('../data/polishMedicationsRegistry.ts');
+
+  assert.ok(POLISH_MEDICATIONS_REGISTRY.length > 2000, 'Registry contains over 2000 items');
+
+  // Normalization check
+  assert.equal(normalizePolishText('Żółć i Gęśl'), 'zolc i gesl');
+
+  // Search without Polish accents finding accented names
+  const resultsNoAccent = searchMedicines('apap');
+  assert.ok(resultsNoAccent.length > 0, 'Found Apap');
+  assert.equal(resultsNoAccent[0].name.startsWith('Apap'), true);
+
+  // Search by active substance
+  const resultsBySubstance = searchMedicines('paracetamol');
+  assert.ok(resultsBySubstance.some(m => m.substance.toLowerCase().includes('paracetamol')), 'Found by Paracetamol substance');
+
+  // Search with Polish accents
+  const resultsWithAccents = searchMedicines('krople');
+  assert.ok(resultsWithAccents.length > 0);
+
+  // Custom medication fallback
+  const customList = [{
+    id: 'custom-1',
+    name: 'Własny Syrop Ziołowy',
+    substance: 'Ekstrakt ziołowy',
+    category: 'Własne',
+    defaultType: 'ml' as const,
+    defaultDose: '5',
+    instructions: 'Po posiłku',
+    isCustom: true
+  }];
+  const customFound = searchMedicines('wlasny', customList);
+  assert.ok(customFound.length > 0 && customFound[0].name === 'Własny Syrop Ziołowy');
+});
+

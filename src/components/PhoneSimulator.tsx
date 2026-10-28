@@ -17,9 +17,12 @@ import {
   RotateCcw,
   Sun,
   SunMedium,
-  Moon
+  Moon,
+  Search,
+  X
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
+import { normalizePolishText } from '../data/polishMedicationsRegistry';
 import { 
   Therapy, 
   Medication, 
@@ -60,6 +63,7 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'today' | 'calendar' | 'therapies'>('today');
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'taken' | 'snoozed'>('all');
+  const [searchQuery, setSearchQuery] = useState('');
   
   // Modals state
   const [isAddMedOpen, setIsAddMedOpen] = useState(false);
@@ -76,10 +80,17 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
   const todayDoses = doses.filter((d) => d.date === todayStr);
   const sortedTodayDoses = sortDosesChronologically(todayDoses);
 
-  // Filtered doses for Today
+  // Filtered doses for Today (wg statusu oraz wpisanej frazy wyszukiwania)
   const displayedDoses = sortedTodayDoses.filter((d) => {
-    if (statusFilter === 'all') return true;
-    return d.status === statusFilter;
+    if (statusFilter !== 'all' && d.status !== statusFilter) return false;
+    if (searchQuery.trim()) {
+      const q = normalizePolishText(searchQuery);
+      const normName = normalizePolishText(d.medicationName);
+      const normTherapy = normalizePolishText(d.therapyName);
+      const normInstructions = d.instructions ? normalizePolishText(d.instructions) : '';
+      return normName.includes(q) || normTherapy.includes(q) || normInstructions.includes(q);
+    }
+    return true;
   });
 
   const compliance = calculateCompliance(todayDoses);
@@ -228,6 +239,28 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                   </div>
                 </div>
 
+                {/* Szybki pasek wyszukiwania leków i terapii */}
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Szukaj leku, dawki lub terapii..."
+                    className="w-full pl-8.5 pr-8 py-2 rounded-xl border border-slate-200/90 bg-white text-xs text-slate-800 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:border-teal-500 shadow-2xs transition-all"
+                  />
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100"
+                      title="Wyczyść wyszukiwanie"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
                 {/* Status Quick Filter Chips */}
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-2xs">
                   <span className="text-slate-400 flex items-center gap-1 font-semibold pr-1">
@@ -257,7 +290,14 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                 {/* Doses Chronological List */}
                 <div className="space-y-3">
                   <div className="flex items-center justify-between text-xs font-bold text-slate-800 px-0.5">
-                    <span>Leki na dziś (chronologicznie)</span>
+                    <span className="flex items-center gap-1.5">
+                      <span>Leki na dziś</span>
+                      {searchQuery && (
+                        <span className="text-2xs font-normal text-teal-700 bg-teal-50 px-2 py-0.5 rounded-full border border-teal-200">
+                          filtr: "{searchQuery}"
+                        </span>
+                      )}
+                    </span>
                     <span className="text-2xs font-medium text-slate-500">
                       {displayedDoses.length} {displayedDoses.length === 1 ? 'dawka' : 'dawek'}
                     </span>
@@ -267,12 +307,24 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                     <div className="bg-white rounded-2xl border border-slate-200/80 p-8 text-center">
                       <Sparkles className="w-8 h-8 text-teal-400 mx-auto mb-2" />
                       <p className="text-slate-700 font-bold text-sm">
-                        {statusFilter === 'all'
+                        {searchQuery
+                          ? `Brak dawek pasujących do "${searchQuery}"`
+                          : statusFilter === 'all'
                           ? 'Brak zaplanowanych leków na dziś!'
                           : 'Brak leków o wybranym statusie.'}
                       </p>
                       <p className="text-slate-400 text-xs mt-1">
-                        Dodaj nowy lek do terapii przyciskiem u góry.
+                        {searchQuery ? (
+                          <button
+                            type="button"
+                            onClick={() => setSearchQuery('')}
+                            className="text-teal-600 hover:text-teal-700 font-bold underline"
+                          >
+                            Wyczyść filtr wyszukiwania
+                          </button>
+                        ) : (
+                          'Dodaj nowy lek do terapii przyciskiem u góry.'
+                        )}
                       </p>
                     </div>
                   ) : (

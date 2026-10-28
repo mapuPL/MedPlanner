@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
-import { X, Plus, Trash2, Clock, Calendar, Check, AlertCircle } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { X, Plus, Trash2, Clock, Calendar, Check, AlertCircle, Search, Sparkles, Database } from 'lucide-react';
 import { Therapy, Medication, MedicationType, ScheduleType, MEDICATION_TYPE_LABELS } from '../utils/medicationLogic';
+import { searchMedicines, RegisteredMedicine } from '../data/polishMedicationsRegistry';
 
 interface AddMedicationModalProps {
   isOpen: boolean;
@@ -40,8 +41,78 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
   const [endDate, setEndDate] = useState('');
   const [error, setError] = useState('');
 
+  // Stan wyszukiwarki leków w rejestrze URPL
+  const [suggestions, setSuggestions] = useState<RegisteredMedicine[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [customMedicines, setCustomMedicines] = useState<RegisteredMedicine[]>(() => {
+    try {
+      const saved = localStorage.getItem('medplaner_custom_medicines');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const searchContainerRef = useRef<HTMLDivElement>(null);
+
+  // Zamykanie podpowiedzi przy kliknięciu poza obszarem
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target as Node)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Aktualizacja podpowiedzi as-you-type
+  const handleNameChange = (val: string) => {
+    setName(val);
+    if (error) setError('');
+    if (val.trim().length >= 1) {
+      const results = searchMedicines(val, customMedicines, 15);
+      setSuggestions(results);
+      setShowSuggestions(true);
+    } else {
+      setSuggestions([]);
+      setShowSuggestions(false);
+    }
+  };
+
+  // Wybór leku z bazy - automatyczne uzupełnienie postaci, dawki i zaleceń
+  const handleSelectMedicine = (med: RegisteredMedicine) => {
+    setName(med.name);
+    setType(med.defaultType);
+    setDoseAmount(med.defaultDose);
+    if (med.instructions) {
+      setInstructions(med.instructions);
+    }
+    setShowSuggestions(false);
+  };
+
+  // Koło ratunkowe - dodanie wpisanego leku jako własnego
+  const handleAddAsCustomMedicine = () => {
+    if (!name.trim()) return;
+    const newCustomMed: RegisteredMedicine = {
+      id: `custom_${Date.now()}`,
+      name: name.trim(),
+      substance: 'Lek własny / niestandardowy',
+      category: 'Leki Własne',
+      defaultType: type,
+      defaultDose: doseAmount,
+      instructions: instructions || 'Zgodnie z zaleceniami',
+      isCustom: true,
+    };
+    const updated = [newCustomMed, ...customMedicines];
+    setCustomMedicines(updated);
+    try {
+      localStorage.setItem('medplaner_custom_medicines', JSON.stringify(updated));
+    } catch (_) {}
+    setShowSuggestions(false);
+  };
+
   // Update selected therapy when modal opens
-  React.useEffect(() => {
+  useEffect(() => {
     if (therapies.length > 0 && !therapyId) {
       setTherapyId(therapies[0].id);
     }
@@ -190,22 +261,98 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
             )}
           </div>
 
-          {/* Nazwa leku */}
-          <div>
-            <label htmlFor="med-name" className="block text-sm font-semibold text-slate-700 mb-1">
-              Nazwa Leku *
-            </label>
-            <input
-              id="med-name"
-              type="text"
-              value={name}
-              onChange={(e) => {
-                setName(e.target.value);
-                if (error) setError('');
-              }}
-              placeholder="np. Amotaks 1g, Krople Hyabak, Ventolin, Acard"
-              className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:border-teal-500 text-sm"
-            />
+          {/* Nazwa leku z wyszukiwarką w rejestrze URPL/NFZ */}
+          <div ref={searchContainerRef} className="relative">
+            <div className="flex items-center justify-between mb-1">
+              <label htmlFor="med-name" className="block text-sm font-semibold text-slate-700">
+                Nazwa Leku *
+              </label>
+              <span className="text-3xs font-medium text-slate-400 flex items-center gap-1">
+                <Database className="w-3 h-3 text-teal-600" /> Baza URPL / NFZ (2700+ leków)
+              </span>
+            </div>
+
+            <div className="relative">
+              <input
+                id="med-name"
+                type="text"
+                value={name}
+                autoComplete="off"
+                onChange={(e) => handleNameChange(e.target.value)}
+                onFocus={() => {
+                  if (name.trim().length >= 1) {
+                    setSuggestions(searchMedicines(name, customMedicines, 15));
+                    setShowSuggestions(true);
+                  }
+                }}
+                placeholder="Wpisz np. Amotaks, Ibuprofen, Polprazol, Euthyrox..."
+                className="w-full pl-9 pr-3.5 py-2.5 rounded-xl border border-slate-300 text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:border-teal-500 text-sm"
+              />
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              {name && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setName('');
+                    setSuggestions([]);
+                    setShowSuggestions(false);
+                  }}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            {/* Lista podpowiedzi z bazy */}
+            {showSuggestions && (
+              <div className="absolute left-0 right-0 top-full mt-1.5 bg-white rounded-xl shadow-xl border border-slate-200 overflow-hidden z-50 max-h-60 overflow-y-auto animate-in fade-in duration-150">
+                <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-100 flex items-center justify-between text-3xs font-semibold text-slate-500">
+                  <span>Sugerowane leki z oficjalnego rejestru:</span>
+                  <span>{suggestions.length} wyników</span>
+                </div>
+
+                {suggestions.map((med) => (
+                  <button
+                    key={med.id}
+                    type="button"
+                    onClick={() => handleSelectMedicine(med)}
+                    className="w-full text-left px-3.5 py-2.5 hover:bg-teal-50/70 border-b border-slate-100 last:border-b-0 transition-colors flex items-start justify-between gap-2 group"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-semibold text-xs text-slate-800 group-hover:text-teal-900 truncate">
+                        {med.name}
+                        {med.isCustom && (
+                          <span className="ml-1.5 px-1.5 py-0.2 rounded-sm bg-purple-100 text-purple-700 text-3xs font-bold">
+                            Własny
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-3xs text-slate-500 truncate mt-0.5">
+                        <span className="font-medium text-slate-600">{med.substance}</span> • {med.instructions}
+                      </div>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <span className="inline-block px-1.5 py-0.5 rounded text-3xs font-bold bg-slate-100 text-slate-600 group-hover:bg-teal-100 group-hover:text-teal-800">
+                        {MEDICATION_TYPE_LABELS[med.defaultType]?.label || med.defaultType}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+
+                {/* Koło ratunkowe: dodanie wpisanej nazwy jako własnego leku */}
+                {name.trim() && (
+                  <button
+                    type="button"
+                    onClick={handleAddAsCustomMedicine}
+                    className="w-full text-left px-3.5 py-2.5 bg-amber-50/80 hover:bg-amber-100 text-amber-900 border-t border-amber-200 transition-colors flex items-center gap-2 text-xs font-bold"
+                  >
+                    <Plus className="w-4 h-4 text-amber-700 shrink-0" />
+                    <span>Użyj "{name.trim()}" jako własny lek (dodaj do bazy)</span>
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Typ leku i dawka */}

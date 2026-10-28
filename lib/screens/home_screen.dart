@@ -17,10 +17,20 @@ class _HomeScreenState extends State<HomeScreen> {
   List<DoseLog> _doses = [];
   bool _isLoading = true;
 
+  // Kontroler wyszukiwania leków i terapii na dziś
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
   @override
   void initState() {
     super.initState();
     _loadDoses();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadDoses() async {
@@ -39,10 +49,19 @@ class _HomeScreenState extends State<HomeScreen> {
     final taken = _doses.where((d) => d.status == DoseStatus.taken).length;
     final progress = total > 0 ? (taken / total) : 1.0;
 
-    // Podział dawek na pory dnia
-    final morningDoses = _doses.where((d) => d.effectiveTime.compareTo('12:00') < 0).toList();
-    final afternoonDoses = _doses.where((d) => d.effectiveTime.compareTo('12:00') >= 0 && d.effectiveTime.compareTo('18:00') < 0).toList();
-    final eveningDoses = _doses.where((d) => d.effectiveTime.compareTo('18:00') >= 0).toList();
+    // Filtrowanie dawek według wpisanej frazy wyszukiwania
+    final filteredDoses = _doses.where((d) {
+      if (_searchQuery.trim().isEmpty) return true;
+      final q = _searchQuery.toLowerCase().trim();
+      final name = (d.medicationName ?? '').toLowerCase();
+      final therapy = (d.therapyName ?? '').toLowerCase();
+      return name.contains(q) || therapy.contains(q);
+    }).toList();
+
+    // Podział przefiltrowanych dawek na pory dnia
+    final morningDoses = filteredDoses.where((d) => d.effectiveTime.compareTo('12:00') < 0).toList();
+    final afternoonDoses = filteredDoses.where((d) => d.effectiveTime.compareTo('12:00') >= 0 && d.effectiveTime.compareTo('18:00') < 0).toList();
+    final eveningDoses = filteredDoses.where((d) => d.effectiveTime.compareTo('18:00') >= 0).toList();
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
@@ -99,30 +118,95 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-                const SizedBox(height: 24),
-                const Text(
-                  'Harmonogram na dziś',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                const SizedBox(height: 16),
+
+                // Szybki pasek wyszukiwania leków i terapii
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: Colors.grey.shade200),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.03),
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: TextField(
+                    controller: _searchController,
+                    onChanged: (val) => setState(() => _searchQuery = val),
+                    style: const TextStyle(fontSize: 14),
+                    decoration: InputDecoration(
+                      hintText: 'Szukaj leku lub terapii...',
+                      hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 14),
+                      prefixIcon: const Icon(Icons.search, size: 20, color: Colors.teal),
+                      suffixIcon: _searchQuery.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear, size: 18, color: Colors.grey),
+                              onPressed: () {
+                                _searchController.clear();
+                                setState(() => _searchQuery = '');
+                              },
+                            )
+                          : null,
+                      border: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Harmonogram na dziś',
+                      style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                    ),
+                    if (_searchQuery.isNotEmpty)
+                      Text(
+                        'Wyniki: ${filteredDoses.length}',
+                        style: TextStyle(fontSize: 12, color: Colors.teal.shade800, fontWeight: FontWeight.bold),
+                      ),
+                  ],
                 ),
                 const SizedBox(height: 12),
 
-                if (_doses.isEmpty)
+                if (filteredDoses.isEmpty)
                   Container(
                     padding: const EdgeInsets.all(32),
                     alignment: Alignment.center,
                     child: Column(
                       children: [
-                        Icon(Icons.check_circle_outline, size: 64, color: Colors.teal.shade200),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'Brak zaplanowanych leków na dziś!',
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                        Icon(
+                          _searchQuery.isNotEmpty ? Icons.search_off : Icons.check_circle_outline,
+                          size: 56,
+                          color: Colors.teal.shade200,
+                        ),
+                        const SizedBox(height: 14),
+                        Text(
+                          _searchQuery.isNotEmpty
+                              ? 'Brak dawek pasujących do "$_searchQuery"'
+                              : 'Brak zaplanowanych leków na dziś!',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 8),
-                        const Text(
-                          'Dodaj nową terapię lub lek przyciskiem poniżej.',
-                          style: TextStyle(color: Colors.grey),
-                        ),
+                        if (_searchQuery.isNotEmpty)
+                          TextButton(
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() => _searchQuery = '');
+                            },
+                            child: const Text('Wyczyść filtr wyszukiwania'),
+                          )
+                        else
+                          const Text(
+                            'Dodaj nową terapię lub lek przyciskiem poniżej.',
+                            style: TextStyle(color: Colors.grey),
+                          ),
                       ],
                     ),
                   )
@@ -132,7 +216,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     _buildTimeOfDaySection(
                       title: 'RANO (do 12:00)',
                       icon: Icons.wb_sunny_outlined,
-                      headerBg: const Color(0xFFFEF3C7), // Ciepły bursztyn 50
+                      headerBg: const Color(0xFFFEF3C7),
                       iconColor: Colors.amber.shade800,
                       badgeBg: Colors.amber.shade100,
                       badgeColor: Colors.amber.shade900,
@@ -144,7 +228,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     _buildTimeOfDaySection(
                       title: 'POPOŁUDNIE (12:00 - 18:00)',
                       icon: Icons.wb_sunny,
-                      headerBg: const Color(0xFFE0F2FE), // Błękit 50
+                      headerBg: const Color(0xFFE0F2FE),
                       iconColor: Colors.blue.shade700,
                       badgeBg: Colors.blue.shade100,
                       badgeColor: Colors.blue.shade900,
@@ -156,7 +240,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     _buildTimeOfDaySection(
                       title: 'WIECZÓR I NOC (od 18:00)',
                       icon: Icons.nights_stay_outlined,
-                      headerBg: const Color(0xFFEDE9FE), // Fiolet/indygo 50
+                      headerBg: const Color(0xFFEDE9FE),
                       iconColor: Colors.indigo.shade700,
                       badgeBg: Colors.indigo.shade100,
                       badgeColor: Colors.indigo.shade900,
@@ -200,7 +284,6 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Nagłówek pory dnia
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
             child: Row(
@@ -236,8 +319,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
           const SizedBox(height: 8),
-
-          // Lista kart leków w danej porze dnia
           ...doses.map((dose) => _buildDoseItem(dose)),
         ],
       ),

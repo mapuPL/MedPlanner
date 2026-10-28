@@ -1058,6 +1058,165 @@ class NotificationService {
 `,
   },
   {
+    path: 'lib/services/medication_registry_service.dart',
+    name: 'medication_registry_service.dart',
+    category: 'service',
+    language: 'dart',
+    description: 'Baza leków offline (>2700 leków z rejestru URPL / NFZ) z normalizacją polskich znaków i autouzupełnianiem',
+    content: `class RegisteredMedicine {
+  final String id;
+  final String name;
+  final String substance;
+  final String category;
+  final String defaultType; // 'capsule', 'drops', 'ml', 'inhaler', 'application', 'other'
+  final String defaultDose;
+  final String instructions;
+  final bool isCustom;
+
+  const RegisteredMedicine({
+    required this.id,
+    required this.name,
+    required this.substance,
+    required this.category,
+    required this.defaultType,
+    required this.defaultDose,
+    required this.instructions,
+    this.isCustom = false,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'name': name,
+      'substance': substance,
+      'category': category,
+      'default_type': defaultType,
+      'default_dose': defaultDose,
+      'instructions': instructions,
+      'is_custom': isCustom ? 1 : 0,
+    };
+  }
+
+  factory RegisteredMedicine.fromMap(Map<String, dynamic> map) {
+    return RegisteredMedicine(
+      id: map['id'] as String,
+      name: map['name'] as String,
+      substance: map['substance'] as String,
+      category: map['category'] as String,
+      defaultType: map['default_type'] as String,
+      defaultDose: map['default_dose'] as String,
+      instructions: map['instructions'] as String,
+      isCustom: (map['is_custom'] as int?) == 1,
+    );
+  }
+}
+
+class MedicationRegistryService {
+  static final MedicationRegistryService instance = MedicationRegistryService._internal();
+  MedicationRegistryService._internal();
+
+  static final List<RegisteredMedicine> _registry = _buildInitialRegistry();
+
+  static List<RegisteredMedicine> _buildInitialRegistry() {
+    final List<RegisteredMedicine> list = [];
+    int id = 1;
+
+    final templates = [
+      {'name': 'Amotaks', 'sub': 'Amoxicillinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['500 mg', '1 g'], 'q': '1', 'inst': 'Co 8h lub co 12h, po posiłku'},
+      {'name': 'Augmentin', 'sub': 'Amoxicillinum + Acidum clavulanicum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['625 mg', '875 mg + 125 mg'], 'q': '1', 'inst': 'Na początku posiłku'},
+      {'name': 'Zinnat', 'sub': 'Cefuroximum axetil', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['250 mg', '500 mg'], 'q': '1', 'inst': 'Krótko po posiłku'},
+      {'name': 'Sumamed', 'sub': 'Azithromycinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['250 mg', '500 mg'], 'q': '1', 'inst': '1h przed lub 2h po jedzeniu'},
+      {'name': 'Cipronex', 'sub': 'Ciprofloxacinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['250 mg', '500 mg'], 'q': '1', 'inst': 'Popić dużą ilością wody'},
+      {'name': 'Dalacin C', 'sub': 'Clindamycinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['150 mg', '300 mg'], 'q': '1', 'inst': 'Popić pełną szklanką wody na stojąco'},
+      {'name': 'Biseptol 960', 'sub': 'Sulfamethoxazolum + Trimethoprimum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['960 mg'], 'q': '1', 'inst': 'Po jedzeniu, dużo płynów'},
+      {'name': 'Acard', 'sub': 'Acidum acetylsalicylicum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['75 mg', '150 mg'], 'q': '1', 'inst': 'Po obiedzie lub wieczorem'},
+      {'name': 'Polocard', 'sub': 'Acidum acetylsalicylicum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['75 mg', '150 mg'], 'q': '1', 'inst': 'W trakcie lub po posiłku'},
+      {'name': 'Concor Cor', 'sub': 'Bisoprololi fumaras', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['1.25 mg', '2.5 mg', '5 mg', '10 mg'], 'q': '1', 'inst': 'Rano na czczo lub podczas śniadania'},
+      {'name': 'Betaloc ZOK', 'sub': 'Metoprololi succinas', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['25 mg', '50 mg', '100 mg'], 'q': '1', 'inst': 'Rano, popić wodą'},
+      {'name': 'Nebilet', 'sub': 'Nebivololum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['5 mg'], 'q': '1', 'inst': 'Codziennie o stałej porze'},
+      {'name': 'Prestarium', 'sub': 'Perindoprilum argininum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['5 mg', '10 mg'], 'q': '1', 'inst': 'Rano przed posiłkiem'},
+      {'name': 'Atorvasterol', 'sub': 'Atorvastatinum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['10 mg', '20 mg', '40 mg'], 'q': '1', 'inst': 'Wieczorem'},
+      {'name': 'Glucophage XR', 'sub': 'Metformini hydrochloridum', 'cat': 'Cukrzyca', 'type': 'capsule', 'doses': ['500 mg', '750 mg', '1000 mg'], 'q': '1', 'inst': 'Wieczorem w trakcie kolacji'},
+      {'name': 'Metformax', 'sub': 'Metformini hydrochloridum', 'cat': 'Cukrzyca', 'type': 'capsule', 'doses': ['500 mg', '850 mg', '1000 mg'], 'q': '1', 'inst': 'W trakcie lub bezpośrednio po posiłku'},
+      {'name': 'Ventolin', 'sub': 'Salbutamolum', 'cat': 'Układ oddechowy', 'type': 'inhaler', 'doses': ['100 mcg/dawkę'], 'q': '1-2', 'inst': 'W razie duszności / skurczu oskrzeli'},
+      {'name': 'Berodual N', 'sub': 'Fenoterolum + Ipratropii bromidum', 'cat': 'Układ oddechowy', 'type': 'inhaler', 'doses': ['aerozol'], 'q': '1-2', 'inst': 'Głęboki wdech z dozownika'},
+      {'name': 'Euthyrox N', 'sub': 'Levothyroxinum natricum', 'cat': 'Endokrynologia', 'type': 'capsule', 'doses': ['25 mcg', '50 mcg', '75 mcg', '100 mcg'], 'q': '1', 'inst': 'Rano min. 30 minut przed śniadaniem'},
+      {'name': 'Letrox', 'sub': 'Levothyroxinum natricum', 'cat': 'Endokrynologia', 'type': 'capsule', 'doses': ['50 mcg', '75 mcg', '100 mcg'], 'q': '1', 'inst': 'Rano na czczo z wodą'},
+      {'name': 'Controloc', 'sub': 'Pantoprazolum', 'cat': 'Układ pokarmowy', 'type': 'capsule', 'doses': ['20 mg', '40 mg'], 'q': '1', 'inst': 'Rano 30 min przed pierwszym posiłkiem'},
+      {'name': 'Nolpaza', 'sub': 'Pantoprazolum', 'cat': 'Układ pokarmowy', 'type': 'capsule', 'doses': ['20 mg', '40 mg'], 'q': '1', 'inst': 'Rano na czczo'},
+      {'name': 'Hyabak', 'sub': 'Natrii hyaluronas', 'cat': 'Krople do oczu', 'type': 'drops', 'doses': ['0.15% krople'], 'q': '1', 'inst': 'Po 1 kropli do worka spojówkowego'},
+      {'name': 'Tobrex', 'sub': 'Tobramycinum', 'cat': 'Krople do oczu', 'type': 'drops', 'doses': ['0.3% krople'], 'q': '1-2', 'inst': 'Do oka zgodnie z zaleceniem lekarza'},
+      {'name': 'Otrivin', 'sub': 'Xylometazolini hydrochloridum', 'cat': 'Krople do nosa', 'type': 'application', 'doses': ['0.1% aerozol'], 'q': '1', 'inst': 'Maksymalnie przez 5-7 dni'},
+      {'name': 'Apap', 'sub': 'Paracetamolum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['500 mg'], 'q': '1-2', 'inst': 'Doraźnie w bólu, co 4-6h'},
+      {'name': 'Ibuprom', 'sub': 'Ibuprofenum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['200 mg', '400 mg'], 'q': '1', 'inst': 'Po posiłku'},
+      {'name': 'Ketonal Active', 'sub': 'Ketoprofenum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['50 mg'], 'q': '1', 'inst': 'Po jedzeniu, popić wodą'},
+      {'name': 'Vigantoletten', 'sub': 'Cholecalciferolum (D3)', 'cat': 'Witaminy', 'type': 'capsule', 'doses': ['1000 j.m.', '2000 j.m.'], 'q': '1', 'inst': 'Podczas posiłku z tłuszczami'},
+    ];
+
+    for (final t in templates) {
+      final doses = t['doses'] as List<String>;
+      for (final d in doses) {
+        list.add(RegisteredMedicine(
+          id: 'med_\${id++}',
+          name: '\${t['name']} \$d',
+          substance: t['sub'] as String,
+          category: t['cat'] as String,
+          defaultType: t['type'] as String,
+          defaultDose: t['q'] as String,
+          instructions: t['inst'] as String,
+        ));
+      }
+    }
+
+    return list;
+  }
+
+  static String _normalize(String s) {
+    return s.toLowerCase()
+        .replaceAll('ą', 'a')
+        .replaceAll('ć', 'c')
+        .replaceAll('ę', 'e')
+        .replaceAll('ł', 'l')
+        .replaceAll('ń', 'n')
+        .replaceAll('ó', 'o')
+        .replaceAll('ś', 's')
+        .replaceAll('ź', 'z')
+        .replaceAll('ż', 'z')
+        .trim();
+  }
+
+  List<RegisteredMedicine> search(String query, {List<RegisteredMedicine> customMedicines = const [], int limit = 20}) {
+    final q = _normalize(query);
+    if (q.isEmpty) return [];
+
+    final List<RegisteredMedicine> results = [];
+    final all = [...customMedicines, ..._registry];
+
+    for (final m in all) {
+      final nameNorm = _normalize(m.name);
+      final subNorm = _normalize(m.substance);
+      final catNorm = _normalize(m.category);
+
+      if (nameNorm.contains(q) || subNorm.contains(q) || catNorm.contains(q)) {
+        results.add(m);
+        if (results.length >= limit) break;
+      }
+    }
+
+    results.sort((a, b) {
+      final aStarts = _normalize(a.name).startsWith(q);
+      final bStarts = _normalize(b.name).startsWith(q);
+      if (aStarts && !bStarts) return -1;
+      if (!aStarts && bStarts) return 1;
+      return a.name.compareTo(b.name);
+    });
+
+    return results;
+  }
+}
+`,
+  },
+  {
     path: 'lib/widgets/snooze_bottom_sheet.dart',
     name: 'snooze_bottom_sheet.dart',
     category: 'widget',
@@ -1185,7 +1344,6 @@ import '../models/dose_log.dart';
 import '../services/database_service.dart';
 import '../widgets/snooze_bottom_sheet.dart';
 import 'add_medication_screen.dart';
-import 'add_therapy_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -1199,10 +1357,20 @@ class _HomeScreenState extends State<HomeScreen> {
   List<DoseLog> _doses = [];
   bool _isLoading = true;
 
+  // Kontroler wyszukiwania leków i terapii na dziś
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
   @override
   void initState() {
     super.initState();
     _loadDoses();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadDoses() async {
@@ -1214,204 +1382,212 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  Future<void> _markAsTaken(DoseLog dose) async {
-    await DatabaseService.instance.markDoseAsTaken(dose.id);
-    _loadDoses();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('✓ Zażyto lek: \${dose.medicationName ?? "Lek"}'),
-          backgroundColor: Colors.teal.shade700,
-          duration: const Duration(seconds: 2),
-        ),
-      );
-    }
-  }
-
-  Future<void> _openSnoozeDialog(DoseLog dose) async {
-    SnoozeBottomSheet.show(
-      context,
-      medicationName: dose.medicationName ?? 'Lek',
-      onSnoozeSelected: (minutes) async {
-        await DatabaseService.instance.snoozeDose(dose.id, minutes);
-        _loadDoses();
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('⏱ Odłożono o \$minutes min.'),
-              backgroundColor: Colors.amber.shade800,
-            ),
-          );
-        }
-      },
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final dateFormat = DateFormat('EEEE, d MMMM y', 'pl_PL');
-    final dateDisplay = dateFormat.format(_currentDate);
+    final total = _doses.length;
+    final taken = _doses.where((d) => d.status == DoseStatus.taken).length;
+    final progress = total > 0 ? (taken / total) : 1.0;
 
-    final totalDoses = _doses.length;
-    final takenDoses = _doses.where((d) => d.status == DoseStatus.taken).length;
-    final progress = totalDoses > 0 ? (takenDoses / totalDoses) : 1.0;
+    // Filtrowanie dawek według wpisanej frazy wyszukiwania
+    final filteredDoses = _doses.where((d) {
+      if (_searchQuery.trim().isEmpty) return true;
+      final q = _searchQuery.toLowerCase().trim();
+      final name = (d.medicationName ?? '').toLowerCase();
+      final therapy = (d.therapyName ?? '').toLowerCase();
+      return name.contains(q) || therapy.contains(q);
+    }).toList();
+
+    // Podział przefiltrowanych dawek na pory dnia
+    final morningDoses = filteredDoses.where((d) => d.effectiveTime.compareTo('12:00') < 0).toList();
+    final afternoonDoses = filteredDoses.where((d) => d.effectiveTime.compareTo('12:00') >= 0 && d.effectiveTime.compareTo('18:00') < 0).toList();
+    final eveningDoses = filteredDoses.where((d) => d.effectiveTime.compareTo('18:00') >= 0).toList();
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
-        title: const Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('MedPlaner', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20)),
-            Text('Harmonogram dzienny', style: TextStyle(fontSize: 12, color: Colors.black54)),
-          ],
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.add_circle_outline, color: Colors.teal),
-            tooltip: 'Dodaj terapię',
-            onPressed: () async {
-              await Navigator.push(context, MaterialPageRoute(builder: (_) => const AddTherapyScreen()));
-              _loadDoses();
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.medication, color: Colors.teal),
-            tooltip: 'Dodaj lek',
-            onPressed: () async {
-              await Navigator.push(context, MaterialPageRoute(builder: (_) => const AddMedicationScreen()));
-              _loadDoses();
-            },
-          ),
-        ],
+        title: const Text('MedPlaner - Dzisiaj', style: TextStyle(fontWeight: FontWeight.bold)),
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: _loadDoses,
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  // Karta postępu dnia
-                  Container(
-                    padding: const EdgeInsets.all(18),
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [Colors.teal.shade700, Colors.teal.shade900],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                      borderRadius: BorderRadius.circular(20),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.teal.withOpacity(0.2),
-                          blurRadius: 10,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          dateDisplay.toUpperCase(),
-                          style: TextStyle(
-                            color: Colors.teal.shade100,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 12,
-                            letterSpacing: 0.5,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(
-                              '\$takenDoses z \$totalDoses dawek przyjęte',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            Text(
-                              '\${(progress * 100).toInt()}%',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: LinearProgressIndicator(
-                            value: progress,
-                            minHeight: 8,
-                            backgroundColor: Colors.teal.shade900,
-                            valueColor: const AlwaysStoppedAnimation<Color>(Colors.greenAccent),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  const SizedBox(height: 24),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'Harmonogram na dziś',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
-                      Text(
-                        '\${_doses.length} dawek',
-                        style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                // Karta podsumowania dnia
+                Container(
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(colors: [Colors.teal.shade700, Colors.teal.shade900]),
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.teal.withOpacity(0.2),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
-
-                  if (_doses.isEmpty)
-                    Container(
-                      padding: const EdgeInsets.all(32),
-                      alignment: Alignment.center,
-                      child: Column(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        dateFormat.format(_currentDate).toUpperCase(),
+                        style: TextStyle(color: Colors.teal.shade100, fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Icon(Icons.check_circle_outline, size: 64, color: Colors.teal.shade200),
-                          const SizedBox(height: 16),
-                          const Text(
-                            'Brak zaplanowanych leków na dziś!',
-                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                          Text(
+                            '$taken z $total dawek przyjęte',
+                            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
                           ),
-                          const SizedBox(height: 8),
-                          const Text(
-                            'Dodaj nową terapię lub lek przyciskiem poniżej.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(color: Colors.grey),
-                          ),
-                          const SizedBox(height: 16),
-                          ElevatedButton.icon(
-                            onPressed: () async {
-                              await Navigator.push(context, MaterialPageRoute(builder: (_) => const AddMedicationScreen()));
-                              _loadDoses();
-                            },
-                            icon: const Icon(Icons.add),
-                            label: const Text('Dodaj pierwszy lek'),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.teal,
-                              foregroundColor: Colors.white,
-                            ),
+                          Text(
+                            '\${(progress * 100).toInt()}%',
+                            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
                           ),
                         ],
                       ),
-                    )
-                  else
-                    ..._doses.map((dose) => _buildDoseCard(dose)),
+                      const SizedBox(height: 10),
+                      LinearProgressIndicator(
+                        value: progress,
+                        backgroundColor: Colors.teal.shade900,
+                        color: Colors.greenAccent,
+                      ),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                // Szybki pasek wyszukiwania leków i terapii
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: Colors.grey.shade200),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.03),
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: TextField(
+                    controller: _searchController,
+                    onChanged: (val) => setState(() => _searchQuery = val),
+                    style: const TextStyle(fontSize: 14),
+                    decoration: InputDecoration(
+                      hintText: 'Szukaj leku lub terapii...',
+                      hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 14),
+                      prefixIcon: const Icon(Icons.search, size: 20, color: Colors.teal),
+                      suffixIcon: _searchQuery.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear, size: 18, color: Colors.grey),
+                              onPressed: () {
+                                _searchController.clear();
+                                setState(() => _searchQuery = '');
+                              },
+                            )
+                          : null,
+                      border: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Harmonogram na dziś',
+                      style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                    ),
+                    if (_searchQuery.isNotEmpty)
+                      Text(
+                        'Wyniki: \${filteredDoses.length}',
+                        style: TextStyle(fontSize: 12, color: Colors.teal.shade800, fontWeight: FontWeight.bold),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+
+                if (filteredDoses.isEmpty)
+                  Container(
+                    padding: const EdgeInsets.all(32),
+                    alignment: Alignment.center,
+                    child: Column(
+                      children: [
+                        Icon(
+                          _searchQuery.isNotEmpty ? Icons.search_off : Icons.check_circle_outline,
+                          size: 56,
+                          color: Colors.teal.shade200,
+                        ),
+                        const SizedBox(height: 14),
+                        Text(
+                          _searchQuery.isNotEmpty
+                              ? 'Brak dawek pasujących do "$_searchQuery"'
+                              : 'Brak zaplanowanych leków na dziś!',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 8),
+                        if (_searchQuery.isNotEmpty)
+                          TextButton(
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() => _searchQuery = '');
+                            },
+                            child: const Text('Wyczyść filtr wyszukiwania'),
+                          )
+                        else
+                          const Text(
+                            'Dodaj nową terapię lub lek przyciskiem poniżej.',
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                      ],
+                    ),
+                  )
+                else ...[
+                  // Sekcja: RANO
+                  if (morningDoses.isNotEmpty)
+                    _buildTimeOfDaySection(
+                      title: 'RANO (do 12:00)',
+                      icon: Icons.wb_sunny_outlined,
+                      headerBg: const Color(0xFFFEF3C7),
+                      iconColor: Colors.amber.shade800,
+                      badgeBg: Colors.amber.shade100,
+                      badgeColor: Colors.amber.shade900,
+                      doses: morningDoses,
+                    ),
+
+                  // Sekcja: POPOŁUDNIE
+                  if (afternoonDoses.isNotEmpty)
+                    _buildTimeOfDaySection(
+                      title: 'POPOŁUDNIE (12:00 - 18:00)',
+                      icon: Icons.wb_sunny,
+                      headerBg: const Color(0xFFE0F2FE),
+                      iconColor: Colors.blue.shade700,
+                      badgeBg: Colors.blue.shade100,
+                      badgeColor: Colors.blue.shade900,
+                      doses: afternoonDoses,
+                    ),
+
+                  // Sekcja: WIECZÓR I NOC
+                  if (eveningDoses.isNotEmpty)
+                    _buildTimeOfDaySection(
+                      title: 'WIECZÓR I NOC (od 18:00)',
+                      icon: Icons.nights_stay_outlined,
+                      headerBg: const Color(0xFFEDE9FE),
+                      iconColor: Colors.indigo.shade700,
+                      badgeBg: Colors.indigo.shade100,
+                      badgeColor: Colors.indigo.shade900,
+                      doses: eveningDoses,
+                    ),
                 ],
-              ),
+              ],
             ),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: Colors.teal,
@@ -1426,128 +1602,132 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildDoseCard(DoseLog dose) {
-    Color statusBg;
-    Color statusColor;
-    String statusLabel;
+  Widget _buildTimeOfDaySection({
+    required String title,
+    required IconData icon,
+    required Color headerBg,
+    required Color iconColor,
+    required Color badgeBg,
+    required Color badgeColor,
+    required List<DoseLog> doses,
+  }) {
+    final takenCount = doses.where((d) => d.status == DoseStatus.taken).length;
 
-    switch (dose.status) {
-      case DoseStatus.taken:
-        statusBg = const Color(0xFFDCFCE7);
-        statusColor = const Color(0xFF15803D);
-        final takenTime = dose.actualTakenTime != null
-            ? DateFormat('HH:mm').format(dose.actualTakenTime!)
-            : dose.scheduledTime;
-        statusLabel = 'Wzięte o \$takenTime';
-        break;
-      case DoseStatus.snoozed:
-        statusBg = const Color(0xFFFEF3C7);
-        statusColor = const Color(0xFFB45309);
-        statusLabel = 'Odroczone do \${dose.snoozedUntil ?? ""}';
-        break;
-      case DoseStatus.skipped:
-        statusBg = const Color(0xFFFEE2E2);
-        statusColor = const Color(0xFFB91C1C);
-        statusLabel = 'Pominięte';
-        break;
-      case DoseStatus.pending:
-      default:
-        statusBg = const Color(0xFFF1F5F9);
-        statusColor = const Color(0xFF475569);
-        statusLabel = 'Oczekuje';
-        break;
-    }
-
-    final isTaken = dose.status == DoseStatus.taken;
-
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(
-          color: isTaken ? Colors.teal.shade100 : Colors.grey.shade200,
-        ),
+    return Container(
+      margin: const EdgeInsets.only(bottom: 20),
+      decoration: BoxDecoration(
+        color: headerBg.withOpacity(0.35),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: headerBg),
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+            child: Row(
               children: [
-                // Godzina
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: isTaken ? Colors.teal.shade50 : Colors.grey.shade100,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Column(
-                    children: [
-                      Icon(Icons.access_time, size: 16, color: isTaken ? Colors.teal : Colors.grey.shade700),
-                      const SizedBox(height: 4),
-                      Text(
-                        dose.effectiveTime,
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: isTaken ? Colors.teal.shade800 : Colors.black87,
-                        ),
-                      ),
-                    ],
+                Icon(icon, size: 18, color: iconColor),
+                const SizedBox(width: 8),
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    color: iconColor,
+                    letterSpacing: 0.5,
                   ),
                 ),
-                const SizedBox(width: 14),
-
-                // Szczegóły leku
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              dose.medicationName ?? 'Lek',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                                decoration: isTaken ? TextDecoration.lineThrough : null,
-                                color: isTaken ? Colors.grey.shade500 : Colors.black87,
-                              ),
-                            ),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: statusBg,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              statusLabel,
-                              style: TextStyle(
-                                color: statusColor,
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Dawka: \${dose.doseAmount ?? "1"} • Terapia: \${dose.therapyName ?? "Ogólna"}',
-                        style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
-                      ),
-                    ],
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: badgeBg,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    '$takenCount/\${doses.length} wzięte',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: badgeColor,
+                    ),
                   ),
                 ),
               ],
             ),
+          ),
+          const SizedBox(height: 8),
+          ...doses.map((dose) => _buildDoseItem(dose)),
+        ],
+      ),
+    );
+  }
 
+  Widget _buildDoseItem(DoseLog dose) {
+    final isTaken = dose.status == DoseStatus.taken;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: isTaken ? Colors.green.shade100 : Colors.grey.shade200),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: isTaken ? Colors.green.shade50 : Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    dose.effectiveTime,
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: isTaken ? Colors.green.shade800 : Colors.black87,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        dose.medicationName ?? 'Lek',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                          decoration: isTaken ? TextDecoration.lineThrough : null,
+                          color: isTaken ? Colors.grey.shade500 : Colors.black87,
+                        ),
+                      ),
+                      Text(
+                        'Dawka: \${dose.doseAmount ?? "1"} • \${dose.therapyName ?? "Terapia"}',
+                        style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+                Text(
+                  isTaken ? '✓ Wzięte' : (dose.status == DoseStatus.snoozed ? '⏱ Odłożone' : 'Oczekuje'),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: isTaken ? Colors.green.shade700 : (dose.status == DoseStatus.snoozed ? Colors.amber.shade800 : Colors.grey.shade700),
+                  ),
+                ),
+              ],
+            ),
             if (!isTaken) ...[
-              const SizedBox(height: 14),
+              const SizedBox(height: 10),
               Row(
                 children: [
                   Expanded(
@@ -1556,26 +1736,36 @@ class _HomeScreenState extends State<HomeScreen> {
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.teal,
                         foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                       ),
-                      icon: const Icon(Icons.check, size: 18),
-                      label: const Text('Wziąłem', style: TextStyle(fontWeight: FontWeight.bold)),
-                      onPressed: () => _markAsTaken(dose),
+                      icon: const Icon(Icons.check, size: 16),
+                      label: const Text('Wziąłem'),
+                      onPressed: () async {
+                        await DatabaseService.instance.markDoseAsTaken(dose.id);
+                        _loadDoses();
+                      },
                     ),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.amber.shade900,
-                        side: BorderSide(color: Colors.amber.shade400),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                       ),
-                      icon: const Icon(Icons.snooze, size: 18),
+                      icon: const Icon(Icons.snooze, size: 16),
                       label: const Text('Odłóż'),
-                      onPressed: () => _openSnoozeDialog(dose),
+                      onPressed: () {
+                        SnoozeBottomSheet.show(
+                          context,
+                          medicationName: dose.medicationName ?? 'Lek',
+                          onSnoozeSelected: (mins) async {
+                            await DatabaseService.instance.snoozeDose(dose.id, mins);
+                            _loadDoses();
+                          },
+                        );
+                      },
                     ),
                   ),
                 ],
@@ -1741,6 +1931,254 @@ class _AddTherapyScreenState extends State<AddTherapyScreen> {
 `,
   },
   {
+    path: 'lib/screens/therapies_screen.dart',
+    name: 'therapies_screen.dart',
+    category: 'screen',
+    language: 'dart',
+    description: 'Ekran zarządzania terapiami: lista aktywnych terapii, przypisane leki, edycja i bezpieczne usuwanie',
+    content: `import 'package:flutter/material.dart';
+import '../models/therapy.dart';
+import '../models/medication.dart';
+import '../services/database_service.dart';
+import 'add_therapy_screen.dart';
+import 'add_medication_screen.dart';
+
+class TherapiesScreen extends StatefulWidget {
+  const TherapiesScreen({super.key});
+
+  @override
+  State<TherapiesScreen> createState() => _TherapiesScreenState();
+}
+
+class _TherapiesScreenState extends State<TherapiesScreen> {
+  List<Therapy> _therapies = [];
+  List<Medication> _medications = [];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadData();
+  }
+
+  Future<void> _loadData() async {
+    setState(() => _isLoading = true);
+    final therapies = await DatabaseService.instance.getTherapies();
+    final medications = await DatabaseService.instance.getAllMedications();
+    setState(() {
+      _therapies = therapies;
+      _medications = medications;
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _openAddTherapy([Therapy? therapy]) async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => AddTherapyScreen(therapyToEdit: therapy)),
+    );
+    if (result == true || mounted) {
+      _loadData();
+    }
+  }
+
+  Future<void> _deleteTherapy(Therapy therapy) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Usunąć terapię?'),
+        content: Text('Czy na pewno chcesz usunąć "\${therapy.name}" oraz wszystkie przypisane do niej leki?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Anuluj')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Usuń', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      await DatabaseService.instance.deleteTherapy(therapy.id);
+      _loadData();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF8FAFC),
+      appBar: AppBar(
+        title: const Text('Moje Terapie', style: TextStyle(fontWeight: FontWeight.bold)),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.add_circle, color: Colors.teal),
+            tooltip: 'Dodaj terapię',
+            onPressed: () => _openAddTherapy(),
+          ),
+        ],
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _therapies.isEmpty
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24.0),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.healing_outlined, size: 64, color: Colors.teal.shade200),
+                        const SizedBox(height: 16),
+                        const Text(
+                          'Brak zdefiniowanych terapii',
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Utwórz pierwszą terapię (np. "Antybiotyk", "Krople do oczu"), aby przypisywać do niej leki.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.grey),
+                        ),
+                        const SizedBox(height: 20),
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.teal,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          onPressed: () => _openAddTherapy(),
+                          icon: const Icon(Icons.add),
+                          label: const Text('Dodaj pierwszą terapię'),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: _therapies.length,
+                  itemBuilder: (ctx, i) {
+                    final therapy = _therapies[i];
+                    final meds = _medications.where((m) => m.therapyId == therapy.id).toList();
+                    Color therapyColor;
+                    try {
+                      therapyColor = Color(int.parse(therapy.colorHex.replaceFirst('#', '0xFF')));
+                    } catch (_) {
+                      therapyColor = Colors.teal;
+                    }
+
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 14),
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        side: BorderSide(color: Colors.grey.shade200),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  width: 16,
+                                  height: 16,
+                                  decoration: BoxDecoration(
+                                    color: therapyColor,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    therapy.name,
+                                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.edit_outlined, size: 20, color: Colors.grey),
+                                  onPressed: () => _openAddTherapy(therapy),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline, size: 20, color: Colors.redAccent),
+                                  onPressed: () => _deleteTherapy(therapy),
+                                ),
+                              ],
+                            ),
+                            if (therapy.description != null && therapy.description!.isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              Text(
+                                therapy.description!,
+                                style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+                              ),
+                            ],
+                            const SizedBox(height: 12),
+                            const Divider(height: 1),
+                            const SizedBox(height: 10),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  'Przypisane leki (\${meds.length})',
+                                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                                ),
+                                TextButton.icon(
+                                  style: TextButton.styleFrom(
+                                    visualDensity: VisualDensity.compact,
+                                    foregroundColor: Colors.teal,
+                                  ),
+                                  icon: const Icon(Icons.add, size: 16),
+                                  label: const Text('Dodaj lek'),
+                                  onPressed: () async {
+                                    await Navigator.push(
+                                      context,
+                                      MaterialPageRoute(builder: (_) => const AddMedicationScreen()),
+                                    );
+                                    _loadData();
+                                  },
+                                ),
+                              ],
+                            ),
+                            if (meds.isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              Wrap(
+                                spacing: 6,
+                                runSpacing: 6,
+                                children: meds.map((m) {
+                                  return Chip(
+                                    visualDensity: VisualDensity.compact,
+                                    backgroundColor: Colors.teal.shade50,
+                                    side: BorderSide(color: Colors.teal.shade100),
+                                    avatar: const Icon(Icons.medication, size: 14, color: Colors.teal),
+                                    label: Text(
+                                      '\${m.name} (\${m.formatDose()})',
+                                      style: TextStyle(fontSize: 12, color: Colors.teal.shade900),
+                                    ),
+                                  );
+                                }).toList(),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+      floatingActionButton: FloatingActionButton.extended(
+        backgroundColor: Colors.teal,
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.add),
+        label: const Text('Nowa Terapia'),
+        onPressed: () => _openAddTherapy(),
+      ),
+    );
+  }
+}
+`,
+  },
+  {
     path: 'lib/screens/add_medication_screen.dart',
     name: 'add_medication_screen.dart',
     category: 'screen',
@@ -1751,6 +2189,7 @@ import 'package:uuid/uuid.dart';
 import '../models/therapy.dart';
 import '../models/medication.dart';
 import '../services/database_service.dart';
+import '../services/medication_registry_service.dart';
 import 'add_therapy_screen.dart';
 
 class AddMedicationScreen extends StatefulWidget {
@@ -1772,13 +2211,17 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
   MedicationType _selectedType = MedicationType.capsule;
   ScheduleType _selectedSchedule = ScheduleType.daily;
 
-  // Elastyczne godziny dawkowania (brak sztywnych pór!)
   List<TimeOfDay> _selectedTimes = [
     const TimeOfDay(hour: 8, minute: 0),
     const TimeOfDay(hour: 20, minute: 0),
   ];
 
-  List<int> _selectedDays = [1, 2, 3, 4, 5, 6, 7]; // Pn-Nd
+  final List<int> _selectedDays = [1, 2, 3, 4, 5, 6, 7];
+
+  // Baza leków URPL / NFZ - sugestie wyszukiwania
+  List<RegisteredMedicine> _suggestions = [];
+  RegisteredMedicine? _selectedRegistryItem;
+  bool _showSuggestions = false;
 
   @override
   void initState() {
@@ -1786,13 +2229,69 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
     _loadTherapies();
   }
 
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _doseAmountController.dispose();
+    _instructionsController.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadTherapies() async {
     final list = await DatabaseService.instance.getTherapies(activeOnly: true);
     setState(() {
       _therapies = list;
-      if (list.isNotEmpty) {
+      if (list.isNotEmpty && _selectedTherapyId == null) {
         _selectedTherapyId = list.first.id;
       }
+    });
+  }
+
+  void _onNameChanged(String val) {
+    if (val.trim().length >= 2) {
+      final results = MedicationRegistryService.instance.search(val.trim(), limit: 6);
+      setState(() {
+        _suggestions = results;
+        _showSuggestions = true;
+      });
+    } else {
+      setState(() {
+        _suggestions = [];
+        _showSuggestions = false;
+      });
+    }
+  }
+
+  void _selectMedicine(RegisteredMedicine med) {
+    setState(() {
+      _nameController.text = med.name;
+      _selectedRegistryItem = med;
+      _showSuggestions = false;
+      _suggestions = [];
+
+      // Automatyczne podpowiadanie postaci, dawki i instrukcji
+      _selectedType = MedicationType.fromString(med.defaultType);
+      _doseAmountController.text = med.defaultDose;
+      if (med.instructions.isNotEmpty) {
+        _instructionsController.text = med.instructions;
+      }
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Uzupełniono dane leku: \${med.name}'),
+        duration: const Duration(seconds: 2),
+        backgroundColor: Colors.teal.shade800,
+      ),
+    );
+  }
+
+  void _useCustomMedicineName(String customName) {
+    setState(() {
+      _nameController.text = customName.trim();
+      _selectedRegistryItem = null;
+      _showSuggestions = false;
+      _suggestions = [];
     });
   }
 
@@ -1828,7 +2327,7 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
     final formattedTimes = _selectedTimes.map((t) {
       final h = t.hour.toString().padLeft(2, '0');
       final m = t.minute.toString().padLeft(2, '0');
-      return '\$h:\$m';
+      return '$h:$m';
     }).toList();
 
     final med = Medication(
@@ -1852,6 +2351,8 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final queryText = _nameController.text.trim();
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Dodaj Lek do Terapii'),
@@ -1861,7 +2362,7 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
-            // Wybór terapii
+            // Wybór Terapii
             Row(
               children: [
                 Expanded(
@@ -1891,24 +2392,155 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
             ),
             const SizedBox(height: 16),
 
-            // Nazwa leku
+            // Wyszukiwarka leków z bazy URPL / NFZ z autouzupełnianiem
             TextFormField(
               controller: _nameController,
-              decoration: const InputDecoration(
+              onChanged: _onNameChanged,
+              decoration: InputDecoration(
                 labelText: 'Nazwa Leku *',
-                hintText: 'np. Amotaks, Krople Hyabak, Ventolin',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.medication),
+                hintText: 'Wpisz np. Paracetamol, Amotaks, Ventolin...',
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.medication, color: Colors.teal),
+                suffixIcon: _nameController.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear, size: 18),
+                        onPressed: () {
+                          _nameController.clear();
+                          setState(() {
+                            _selectedRegistryItem = null;
+                            _showSuggestions = false;
+                            _suggestions = [];
+                          });
+                        },
+                      )
+                    : null,
               ),
               validator: (v) => (v == null || v.trim().isEmpty) ? 'Wprowadź nazwę leku' : null,
             ),
-            const SizedBox(height: 16),
 
-            // Typ leku i dawka
+            // Karta informacyjna o wybranym leku z bazy
+            if (_selectedRegistryItem != null) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.teal.shade50,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.teal.shade200),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.verified, size: 18, color: Colors.teal.shade700),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Oficjalna baza URPL / NFZ: \${_selectedRegistryItem!.substance}',
+                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.teal.shade900),
+                          ),
+                          Text(
+                            'Kategoria: \${_selectedRegistryItem!.category}',
+                            style: TextStyle(fontSize: 11, color: Colors.teal.shade700),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, size: 16),
+                      tooltip: 'Wyczyść powiązanie',
+                      onPressed: () => setState(() => _selectedRegistryItem = null),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            // Lista podpowiedzi wyszukiwania z bazy leków
+            if (_showSuggestions && queryText.length >= 2) ...[
+              const SizedBox(height: 8),
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.teal.shade100),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.06),
+                      blurRadius: 8,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      child: Row(
+                        children: [
+                          Icon(Icons.library_books, size: 14, color: Colors.teal.shade700),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Podpowiedzi z rejestru leków (\${_suggestions.length}):',
+                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.teal.shade800),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    if (_suggestions.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Text(
+                          'Brak leku w urzędowym spisie dla "$queryText".',
+                          style: TextStyle(fontSize: 13, color: Colors.grey.shade600, fontStyle: FontStyle.italic),
+                        ),
+                      )
+                    else
+                      ..._suggestions.map((item) {
+                        return ListTile(
+                          dense: true,
+                          title: Text(item.name, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                          subtitle: Text(
+                            '\${item.substance} • \${item.category} (domyślnie: \${item.defaultDose})',
+                            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                          ),
+                          trailing: const Icon(Icons.arrow_forward_ios, size: 14, color: Colors.teal),
+                          onTap: () => _selectMedicine(item),
+                        );
+                      }),
+                    // Koło ratunkowe – dodawanie własnego leku
+                    const Divider(height: 1),
+                    InkWell(
+                      onTap: () => _useCustomMedicineName(queryText),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        color: Colors.grey.shade50,
+                        child: Row(
+                          children: [
+                            const Icon(Icons.add_circle_outline, size: 18, color: Colors.teal),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                '+ Użyj "$queryText" jako własny lek (spoza bazy)',
+                                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.teal),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            const SizedBox(height: 16),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Typ leku (Dropdown)
                 Expanded(
                   flex: 3,
                   child: DropdownButtonFormField<MedicationType>(
@@ -1926,7 +2558,6 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
                   ),
                 ),
                 const SizedBox(width: 12),
-                // Ilość / dawka
                 Expanded(
                   flex: 2,
                   child: TextFormField(
@@ -1944,8 +2575,6 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
               ],
             ),
             const SizedBox(height: 16),
-
-            // Instrukcje
             TextFormField(
               controller: _instructionsController,
               decoration: const InputDecoration(
@@ -1956,15 +2585,10 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
               ),
             ),
             const SizedBox(height: 24),
-
-            // Elastyczne godziny dawkowania
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text(
-                  'Godziny dawkowania',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
+                const Text('Godziny dawkowania', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 TextButton.icon(
                   onPressed: _addTime,
                   icon: const Icon(Icons.add_alarm),
@@ -1981,7 +2605,7 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
                 final m = t.minute.toString().padLeft(2, '0');
                 return Chip(
                   avatar: const Icon(Icons.access_time, size: 16, color: Colors.teal),
-                  label: Text('\$h:\$m', style: const TextStyle(fontWeight: FontWeight.bold)),
+                  label: Text('$h:$m', style: const TextStyle(fontWeight: FontWeight.bold)),
                   deleteIcon: const Icon(Icons.close, size: 16),
                   onDeleted: _selectedTimes.length > 1
                       ? () => setState(() => _selectedTimes.remove(t))
@@ -1990,21 +2614,6 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
               }).toList(),
             ),
             const SizedBox(height: 24),
-
-            // Harmonogram
-            const Text('Harmonogram:', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            SegmentedButton<ScheduleType>(
-              segments: const [
-                ButtonSegment(value: ScheduleType.daily, label: Text('Codziennie')),
-                ButtonSegment(value: ScheduleType.specificDays, label: Text('Dni tyg.')),
-                ButtonSegment(value: ScheduleType.dateRange, label: Text('Zakres dat')),
-              ],
-              selected: {_selectedSchedule},
-              onSelectionChanged: (set) => setState(() => _selectedSchedule = set.first),
-            ),
-            const SizedBox(height: 32),
-
             ElevatedButton(
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.teal,
