@@ -3,6 +3,7 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'screens/home_screen.dart';
 import 'screens/calendar_screen.dart';
 import 'screens/therapies_screen.dart';
+import 'screens/backup_sync_screen.dart';
 import 'services/database_service.dart';
 import 'services/notification_service.dart';
 
@@ -46,6 +47,7 @@ class _MainShellState extends State<MainShell> {
     HomeScreen(),
     CalendarScreen(),
     TherapiesScreen(),
+    BackupSyncScreen(),
   ];
 
   @override
@@ -59,6 +61,7 @@ class _MainShellState extends State<MainShell> {
           NavigationDestination(icon: Icon(Icons.today), label: 'Dziś'),
           NavigationDestination(icon: Icon(Icons.calendar_month), label: 'Kalendarz'),
           NavigationDestination(icon: Icon(Icons.healing), label: 'Terapie'),
+          NavigationDestination(icon: Icon(Icons.cloud_sync_outlined), label: 'Kopia & Dysk'),
         ],
       ),
     );

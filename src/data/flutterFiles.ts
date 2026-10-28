@@ -87,9 +87,13 @@ dependencies:
   flutter_timezone: ^3.0.1
   sqflite: ^2.4.1
   path: ^1.9.0
+  path_provider: ^2.1.2
   intl: ^0.19.0
   uuid: ^4.5.1
   cupertino_icons: ^1.0.8
+  google_sign_in: ^6.2.1
+  googleapis: ^13.2.0
+  http: ^1.2.2
 
 dev_dependencies:
   flutter_test:
@@ -626,7 +630,8 @@ class DoseLog {
     category: 'service',
     language: 'dart',
     description: 'Lokalna baza SQLite (sqflite) w 100% offline do zapisu terapii, leków i rejestru dawek',
-    content: `import 'package:sqflite/sqflite.dart';
+    content: `import 'dart:io';
+import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/therapy.dart';
 import '../models/medication.dart';
@@ -636,17 +641,43 @@ class DatabaseService {
   static final DatabaseService instance = DatabaseService._internal();
   DatabaseService._internal();
 
+  static const String databaseFileName = 'medications_catalog.db';
   static Database? _database;
 
   Future<Database> get database async {
-    if (_database != null) return _database!;
+    if (_database != null && _database!.isOpen) return _database!;
     _database = await _initDatabase();
     return _database!;
   }
 
+  Future<String> getDatabaseFilePath() async {
+    final dbPath = await getDatabasesPath();
+    return join(dbPath, databaseFileName);
+  }
+
+  Future<void> closeDatabase() async {
+    if (_database != null && _database!.isOpen) {
+      await _database!.close();
+      _database = null;
+    }
+  }
+
+  Future<void> reloadDatabase() async {
+    await closeDatabase();
+    _database = await _initDatabase();
+  }
+
   Future<Database> _initDatabase() async {
     final dbPath = await getDatabasesPath();
-    final path = join(dbPath, 'medplaner.db');
+    final path = join(dbPath, databaseFileName);
+
+    // Migracja wsteczna: jeśli istniała wcześniejsza baza medplaner.db, a brak medications_catalog.db
+    final legacyPath = join(dbPath, 'medplaner.db');
+    if (!await File(path).exists() && await File(legacyPath).exists()) {
+      try {
+        await File(legacyPath).copy(path);
+      } catch (_) {}
+    }
 
     return await openDatabase(
       path,
@@ -700,30 +731,24 @@ class DatabaseService {
           )
         ''');
 
-        // Indeksy dla szybkiego wyszukiwania wg daty
         await db.execute('CREATE INDEX idx_dose_logs_date ON dose_logs (scheduled_date)');
       },
     );
   }
 
-  // --- TERAPIE ---
   Future<void> insertTherapy(Therapy therapy) async {
     final db = await database;
     await db.insert('therapies', therapy.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
-  Future<List<Therapy>> getTherapies({bool activeOnly = false}) async {
+  Future<void> updateTherapy(Therapy therapy) async {
     final db = await database;
-    final where = activeOnly ? 'is_active = 1' : null;
-    final maps = await db.query('therapies', where: where, orderBy: 'created_at DESC');
-    return maps.map((m) => Therapy.fromMap(m)).toList();
-  }
-
-  Future<Therapy?> getTherapy(String id) async {
-    final db = await database;
-    final maps = await db.query('therapies', where: 'id = ?', whereArgs: [id], limit: 1);
-    if (maps.isNotEmpty) return Therapy.fromMap(maps.first);
-    return null;
+    await db.update(
+      'therapies',
+      therapy.toMap(),
+      where: 'id = ?',
+      whereArgs: [therapy.id],
+    );
   }
 
   Future<void> deleteTherapy(String id) async {
@@ -733,10 +758,22 @@ class DatabaseService {
     await db.delete('dose_logs', where: 'therapy_id = ?', whereArgs: [id]);
   }
 
-  // --- LEKI ---
+  Future<List<Therapy>> getTherapies({bool activeOnly = false}) async {
+    final db = await database;
+    final where = activeOnly ? 'is_active = 1' : null;
+    final maps = await db.query('therapies', where: where, orderBy: 'created_at DESC');
+    return maps.map((m) => Therapy.fromMap(m)).toList();
+  }
+
   Future<void> insertMedication(Medication medication) async {
     final db = await database;
     await db.insert('medications', medication.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> deleteMedication(String id) async {
+    final db = await database;
+    await db.delete('medications', where: 'id = ?', whereArgs: [id]);
+    await db.delete('dose_logs', where: 'medication_id = ?', whereArgs: [id]);
   }
 
   Future<List<Medication>> getMedicationsForTherapy(String therapyId) async {
@@ -751,21 +788,12 @@ class DatabaseService {
     return maps.map((m) => Medication.fromMap(m)).toList();
   }
 
-  Future<void> deleteMedication(String id) async {
-    final db = await database;
-    await db.delete('medications', where: 'id = ?', whereArgs: [id]);
-    await db.delete('dose_logs', where: 'medication_id = ?', whereArgs: [id]);
-  }
-
-  // --- GENEROWANIE I POBIERANIE DAWEK NA DANY DZIEŃ ---
   Future<List<DoseLog>> getDosesForDate(DateTime date) async {
     final db = await database;
     final dateStr = date.toIso8601String().substring(0, 10);
 
-    // 1. Upewnij się, że dawki na ten dzień zostały wygenerowane
     await _ensureDosesGeneratedForDate(date);
 
-    // 2. Pobierz dawki wraz z nazwami leku i terapii
     final result = await db.rawQuery('''
       SELECT dl.*, 
              m.name AS medication_name, 
@@ -796,13 +824,11 @@ class DatabaseService {
       [dateStr],
     ));
 
-    if ((existingCount ?? 0) > 0) return; // Już wygenerowane
+    if ((existingCount ?? 0) > 0) return;
 
-    // Pobierz wszystkie leki i sprawdź, które przypadają na ten dzień
     final allMeds = await getAllMedications();
     final batch = db.batch();
-
-    final isoWeekday = date.weekday; // 1=Mon, 7=Sun
+    final isoWeekday = date.weekday;
 
     for (final med in allMeds) {
       if (dateStr.compareTo(med.startDate.toIso8601String().substring(0, 10)) < 0) continue;
@@ -812,9 +838,7 @@ class DatabaseService {
       if (med.scheduleType == ScheduleType.daily || med.scheduleType == ScheduleType.dateRange) {
         shouldSchedule = true;
       } else if (med.scheduleType == ScheduleType.specificDays) {
-        if (med.selectedDays.contains(isoWeekday)) {
-          shouldSchedule = true;
-        }
+        if (med.selectedDays.contains(isoWeekday)) shouldSchedule = true;
       }
 
       if (shouldSchedule) {
@@ -839,7 +863,6 @@ class DatabaseService {
     await batch.commit(noResult: true);
   }
 
-  // Akcje: Wziąłem, Odłóż, Pomiń
   Future<void> markDoseAsTaken(String doseId) async {
     final db = await database;
     await db.update(
@@ -864,16 +887,6 @@ class DatabaseService {
       SET status = ?, snoozed_until = ?, snooze_count = snooze_count + 1 
       WHERE id = ?
     ''', [DoseStatus.snoozed.name, snoozedTimeString, doseId]);
-  }
-
-  Future<void> skipDose(String doseId) async {
-    final db = await database;
-    await db.update(
-      'dose_logs',
-      {'status': DoseStatus.skipped.name},
-      where: 'id = ?',
-      whereArgs: [doseId],
-    );
   }
 }
 `,
@@ -1053,6 +1066,354 @@ class NotificationService {
 
   Future<void> cancelAll() async {
     await _notificationsPlugin.cancelAll();
+  }
+}
+`,
+  },
+  {
+    path: 'lib/services/google_drive_sync_service.dart',
+    name: 'google_drive_sync_service.dart',
+    category: 'service',
+    language: 'dart',
+    description: 'Synchronizacja bazy SQLite z Dyskiem Google: logowanie Google, zapis medplaner-backup.db w dedykowanym folderze oraz przywracanie',
+    content: `import 'dart:async';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:googleapis/drive/v3.dart' as drive;
+import 'package:http/http.dart' as http;
+import 'database_service.dart';
+
+/// Pomocniczy klient HTTP przekazujący nagłówki autoryzacji Google OAuth2
+class GoogleAuthClient extends http.BaseClient {
+  final Map<String, String> _headers;
+  final http.Client _client = http.Client();
+
+  GoogleAuthClient(this._headers);
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    return _client.send(request..headers.addAll(_headers));
+  }
+}
+
+/// Model metadanych kopii zapasowej
+class BackupInfo {
+  final String id;
+  final String name;
+  final DateTime modifiedTime;
+  final int sizeBytes;
+
+  BackupInfo({
+    required this.id,
+    required this.name,
+    required this.modifiedTime,
+    required this.sizeBytes,
+  });
+
+  String get formattedSize {
+    if (sizeBytes < 1024) return '$sizeBytes B';
+    if (sizeBytes < 1024 * 1024) return '\${(sizeBytes / 1024).toStringAsFixed(1)} KB';
+    return '\${(sizeBytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+  }
+}
+
+/// Wynik operacji synchronizacji
+class SyncResult {
+  final bool success;
+  final String message;
+  final BackupInfo? backupInfo;
+
+  SyncResult({required this.success, required this.message, this.backupInfo});
+}
+
+class GoogleDriveSyncService {
+  static final GoogleDriveSyncService instance = GoogleDriveSyncService._internal();
+  GoogleDriveSyncService._internal();
+
+  // Nazwa pliku kopii zapasowej zgodnie z wymaganiami
+  static const String backupFileName = 'medplaner-backup.db';
+  // Dedykowany folder na Dysku Google
+  static const String backupFolderName = 'MedPlaner Kopia Zapasowa';
+
+  // Najbardziej restrykcyjne uprawnienie dające dostęp WYŁĄCZNIE do plików stworzonych przez tę aplikację
+  final GoogleSignIn _googleSignIn = GoogleSignIn(
+    scopes: [
+      drive.DriveApi.driveFileScope, // https://www.googleapis.com/auth/drive.file
+      'email',
+    ],
+  );
+
+  GoogleSignInAccount? _currentUser;
+  GoogleSignInAccount? get currentUser => _currentUser;
+  bool get isSignedIn => _currentUser != null;
+
+  /// Inicjalizacja nasłuchiwania stanu logowania
+  void initialize({Function(GoogleSignInAccount?)? onUserChanged}) {
+    _googleSignIn.onCurrentUserChanged.listen((account) {
+      _currentUser = account;
+      if (onUserChanged != null) {
+        onUserChanged(account);
+      }
+    });
+  }
+
+  /// Logowanie na żądanie użytkownika
+  Future<GoogleSignInAccount?> signIn() async {
+    try {
+      final account = await _googleSignIn.signIn();
+      _currentUser = account;
+      return account;
+    } catch (e) {
+      debugPrint('Błąd logowania Google Sign-In: $e');
+      rethrow;
+    }
+  }
+
+  /// Ciche logowanie przy ponownym uruchomieniu aplikacji (bez wymuszania okna dialogowego)
+  Future<GoogleSignInAccount?> signInSilently() async {
+    try {
+      final account = await _googleSignIn.signInSilently();
+      _currentUser = account;
+      return account;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Wylogowanie
+  Future<void> signOut() async {
+    await _googleSignIn.signOut();
+    _currentUser = null;
+  }
+
+  /// Pobranie uwierzytelnionego klienta Drive API
+  Future<drive.DriveApi?> _getDriveApi() async {
+    if (_currentUser == null) {
+      final account = await _googleSignIn.signInSilently();
+      _currentUser = account;
+      if (_currentUser == null) return null;
+    }
+
+    final authHeaders = await _currentUser!.authHeaders;
+    final client = GoogleAuthClient(authHeaders);
+    return drive.DriveApi(client);
+  }
+
+  /// Wyszukanie lub utworzenie dedykowanego folderu "MedPlaner Kopia Zapasowa"
+  Future<String> _getOrCreateBackupFolder(drive.DriveApi driveApi) async {
+    final query = "mimeType = 'application/vnd.google-apps.folder' and name = '$backupFolderName' and trashed = false";
+    final folderList = await driveApi.files.list(q: query, spaces: 'drive', $fields: 'files(id, name)');
+
+    if (folderList.files != null && folderList.files!.isNotEmpty) {
+      return folderList.files!.first.id!;
+    }
+
+    // Jeśli folder nie istnieje, tworzymy go
+    final folderMetadata = drive.File()
+      ..name = backupFolderName
+      ..mimeType = 'application/vnd.google-apps.folder'
+      ..description = 'Bezpieczny folder z kopiami bazy danych aplikacji MedPlaner';
+
+    final createdFolder = await driveApi.files.create(folderMetadata, $fields: 'id');
+    return createdFolder.id!;
+  }
+
+  /// Pobranie informacji o istniejącej kopii zapasowej
+  Future<BackupInfo?> getLatestBackupInfo() async {
+    final driveApi = await _getDriveApi();
+    if (driveApi == null) return null;
+
+    try {
+      final query = "name = '$backupFileName' and trashed = false";
+      final fileList = await driveApi.files.list(
+        q: query,
+        spaces: 'drive',
+        $fields: 'files(id, name, modifiedTime, size)',
+      );
+
+      if (fileList.files == null || fileList.files!.isEmpty) {
+        return null;
+      }
+
+      final file = fileList.files!.first;
+      return BackupInfo(
+        id: file.id ?? '',
+        name: file.name ?? backupFileName,
+        modifiedTime: file.modifiedTime ?? DateTime.now(),
+        sizeBytes: int.tryParse(file.size ?? '0') ?? 0,
+      );
+    } catch (e) {
+      debugPrint('Błąd pobierania informacji o kopii zapasowej: $e');
+      return null;
+    }
+  }
+
+  /// Eksport i wysłanie lokalnej bazy danych do Google Drive
+  Future<SyncResult> backupDatabase() async {
+    final driveApi = await _getDriveApi();
+    if (driveApi == null) {
+      return SyncResult(success: false, message: 'Musisz najpierw zalogować się swoim kontem Google.');
+    }
+
+    try {
+      // 1. Zlokalizuj lokalną bazę SQLite
+      final dbPath = await DatabaseService.instance.getDatabaseFilePath();
+      final dbFile = File(dbPath);
+
+      if (!await dbFile.exists()) {
+        return SyncResult(success: false, message: 'Nie znaleziono lokalnego pliku bazy danych ($dbPath).');
+      }
+
+      final dbLength = await dbFile.length();
+      if (dbLength == 0) {
+        return SyncResult(success: false, message: 'Lokalna baza danych jest pusta.');
+      }
+
+      // 2. Pobierz lub stwórz dedykowany folder w Dysku Google
+      final folderId = await _getOrCreateBackupFolder(driveApi);
+
+      // 3. Sprawdź czy plik medplaner-backup.db już istnieje w tym folderze
+      final query = "name = '$backupFileName' and '$folderId' in parents and trashed = false";
+      final fileList = await driveApi.files.list(q: query, spaces: 'drive', $fields: 'files(id, name)');
+
+      final media = drive.Media(dbFile.openRead(), dbLength);
+      drive.File uploadedFile;
+
+      if (fileList.files != null && fileList.files!.isNotEmpty) {
+        // Aktualizacja istniejącego pliku
+        final existingFileId = fileList.files!.first.id!;
+        final fileUpdate = drive.File()..modifiedTime = DateTime.now().toUtc();
+        uploadedFile = await driveApi.files.update(
+          fileUpdate,
+          existingFileId,
+          uploadMedia: media,
+          $fields: 'id, name, modifiedTime, size',
+        );
+      } else {
+        // Utworzenie nowego pliku
+        final newFile = drive.File()
+          ..name = backupFileName
+          ..parents = [folderId]
+          ..description = 'Kopia bazy danych aplikacji MedPlaner SQLite ($dbLength bajtów)';
+
+        uploadedFile = await driveApi.files.create(
+          newFile,
+          uploadMedia: media,
+          $fields: 'id, name, modifiedTime, size',
+        );
+      }
+
+      final info = BackupInfo(
+        id: uploadedFile.id ?? '',
+        name: uploadedFile.name ?? backupFileName,
+        modifiedTime: uploadedFile.modifiedTime ?? DateTime.now(),
+        sizeBytes: int.tryParse(uploadedFile.size ?? '$dbLength') ?? dbLength,
+      );
+
+      return SyncResult(
+        success: true,
+        message: 'Kopia zapasowa została pomyślnie zapisana na Twoim Dysku Google (\${info.formattedSize}).',
+        backupInfo: info,
+      );
+    } catch (e) {
+      debugPrint('Błąd tworzenia kopii zapasowej w Google Drive: $e');
+      return SyncResult(
+        success: false,
+        message: 'Wystąpił błąd podczas wysyłania kopii do Dysku Google: $e',
+      );
+    }
+  }
+
+  /// Przywrócenie lokalnej bazy danych z pliku w Google Drive
+  Future<SyncResult> restoreDatabase() async {
+    final driveApi = await _getDriveApi();
+    if (driveApi == null) {
+      return SyncResult(success: false, message: 'Musisz najpierw zalogować się swoim kontem Google.');
+    }
+
+    try {
+      // 1. Wyszukaj plik kopii zapasowej
+      final query = "name = '$backupFileName' and trashed = false";
+      final fileList = await driveApi.files.list(
+        q: query,
+        spaces: 'drive',
+        $fields: 'files(id, name, modifiedTime, size)',
+      );
+
+      if (fileList.files == null || fileList.files!.isEmpty) {
+        return SyncResult(
+          success: false,
+          message: 'Na Twoim Dysku Google nie odnaleziono jeszcze żadnej kopii zapasowej ("$backupFileName").',
+        );
+      }
+
+      final driveBackup = fileList.files!.first;
+      final fileId = driveBackup.id!;
+
+      // 2. Pobierz zawartość pliku z Google Drive
+      final drive.Media downloadedMedia = await driveApi.files.get(
+        fileId,
+        downloadOptions: drive.DownloadOptions.fullMedia,
+      ) as drive.Media;
+
+      final List<int> bytes = [];
+      await for (final chunk in downloadedMedia.stream) {
+        bytes.addAll(chunk);
+      }
+
+      if (bytes.isEmpty) {
+        return SyncResult(success: false, message: 'Pobrany plik kopii zapasowej jest pusty.');
+      }
+
+      // 3. Bezpieczne zamknięcie obecnej instancji SQLite przed nadpisaniem
+      await DatabaseService.instance.closeDatabase();
+
+      // 4. Nadpisanie lokalnego pliku bazy medications_catalog.db
+      final dbPath = await DatabaseService.instance.getDatabaseFilePath();
+      final dbFile = File(dbPath);
+
+      // Kopia bezpieczeństwa przed nadpisaniem
+      if (await dbFile.exists()) {
+        try {
+          await dbFile.copy('$dbPath.bak');
+        } catch (_) {}
+      }
+
+      await dbFile.writeAsBytes(bytes, flush: true);
+
+      // 5. Ponowne zainicjalizowanie i otwarcie bazy SQLite
+      await DatabaseService.instance.reloadDatabase();
+
+      final info = BackupInfo(
+        id: fileId,
+        name: driveBackup.name ?? backupFileName,
+        modifiedTime: driveBackup.modifiedTime ?? DateTime.now(),
+        sizeBytes: bytes.length,
+      );
+
+      return SyncResult(
+        success: true,
+        message: 'Baza danych została pomyślnie przywrócona z Dysku Google (\${info.formattedSize}).',
+        backupInfo: info,
+      );
+    } catch (e) {
+      debugPrint('Błąd przywracania bazy danych z Google Drive: $e');
+      // Próba przywrócenia z pliku .bak w razie awarii
+      try {
+        final dbPath = await DatabaseService.instance.getDatabaseFilePath();
+        final bakFile = File('$dbPath.bak');
+        if (await bakFile.exists()) {
+          await bakFile.copy(dbPath);
+          await DatabaseService.instance.reloadDatabase();
+        }
+      } catch (_) {}
+
+      return SyncResult(
+        success: false,
+        message: 'Wystąpił błąd podczas pobierania bazy z Dysku Google: $e',
+      );
+    }
   }
 }
 `,
@@ -1344,6 +1705,7 @@ import '../models/dose_log.dart';
 import '../services/database_service.dart';
 import '../widgets/snooze_bottom_sheet.dart';
 import 'add_medication_screen.dart';
+import 'backup_sync_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -1407,6 +1769,16 @@ class _HomeScreenState extends State<HomeScreen> {
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
         title: const Text('MedPlaner - Dzisiaj', style: TextStyle(fontWeight: FontWeight.bold)),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.cloud_sync_outlined, color: Colors.teal),
+            tooltip: 'Kopia zapasowa na Dysku Google',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const BackupSyncScreen()),
+            ),
+          ),
+        ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -2633,6 +3005,428 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
 `,
   },
   {
+    path: 'lib/screens/backup_sync_screen.dart',
+    name: 'backup_sync_screen.dart',
+    category: 'screen',
+    language: 'dart',
+    description: 'Ekran bezpiecznej kopii zapasowej w chmurze z edukacją o prywatności (offline-first, drive.file, brak serwerów twórcy)',
+    content: `import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import '../services/google_drive_sync_service.dart';
+
+class BackupSyncScreen extends StatefulWidget {
+  const BackupSyncScreen({super.key});
+
+  @override
+  State<BackupSyncScreen> createState() => _BackupSyncScreenState();
+}
+
+class _BackupSyncScreenState extends State<BackupSyncScreen> {
+  final _syncService = GoogleDriveSyncService.instance;
+  bool _isLoading = false;
+  String? _statusMessage;
+  bool _isSuccessMessage = true;
+  BackupInfo? _latestBackup;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkInitialState();
+  }
+
+  Future<void> _checkInitialState() async {
+    setState(() => _isLoading = true);
+    await _syncService.signInSilently();
+    if (_syncService.isSignedIn) {
+      _latestBackup = await _syncService.getLatestBackupInfo();
+    }
+    if (mounted) {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _handleSignIn() async {
+    setState(() {
+      _isLoading = true;
+      _statusMessage = null;
+    });
+
+    try {
+      final user = await _syncService.signIn();
+      if (user != null) {
+        _latestBackup = await _syncService.getLatestBackupInfo();
+        _statusMessage = 'Zalogowano pomyślnie jako \${user.email}';
+        _isSuccessMessage = true;
+      }
+    } catch (e) {
+      _statusMessage = 'Logowanie zostało przerwane lub wystąpił błąd: $e';
+      _isSuccessMessage = false;
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _handleSignOut() async {
+    setState(() => _isLoading = true);
+    await _syncService.signOut();
+    setState(() {
+      _latestBackup = null;
+      _statusMessage = 'Wylogowano z konta Google.';
+      _isSuccessMessage = true;
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _handleBackup() async {
+    setState(() {
+      _isLoading = true;
+      _statusMessage = null;
+    });
+
+    final result = await _syncService.backupDatabase();
+    if (result.success && result.backupInfo != null) {
+      _latestBackup = result.backupInfo;
+    }
+
+    if (mounted) {
+      setState(() {
+        _statusMessage = result.message;
+        _isSuccessMessage = result.success;
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _handleRestore() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 28),
+            SizedBox(width: 8),
+            Text('Przywrócić dane?'),
+          ],
+        ),
+        content: const Text(
+          'Przywrócenie kopii z Dysku Google zastąpi obecną lokalną bazę leków i terapii plikiem "medplaner-backup.db".\\n\\nCzy na pewno chcesz kontynuować?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Anuluj'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Przywróć bazę'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() {
+      _isLoading = true;
+      _statusMessage = null;
+    });
+
+    final result = await _syncService.restoreDatabase();
+    if (result.success && result.backupInfo != null) {
+      _latestBackup = result.backupInfo;
+    }
+
+    if (mounted) {
+      setState(() {
+        _statusMessage = result.message;
+        _isSuccessMessage = result.success;
+        _isLoading = false;
+      });
+
+      if (result.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Baza danych została zaktualizowana.'),
+            backgroundColor: Colors.teal,
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dateFormat = DateFormat('dd.MM.yyyy HH:mm', 'pl_PL');
+    final user = _syncService.currentUser;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFF8FAFC),
+      appBar: AppBar(
+        title: const Text('Kopia zapasowa (Google Drive)', style: TextStyle(fontWeight: FontWeight.bold)),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          // Karta Edukacyjno-Prywatnościowa (Ochrona danych użytkownika)
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.teal.shade200),
+              boxShadow: [
+                BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8, offset: const Offset(0, 2)),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.teal.shade50,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(Icons.shield_outlined, color: Colors.teal.shade800, size: 24),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Prywatność i bezpieczeństwo Twoich danych',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.teal.shade900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  '1. MedPlaner działa w 100% lokalnie (offline) w pamięci Twojego urządzenia.\\n'
+                  '2. Kopia zapasowa w chmurze jest całkowicie opcjonalna – korzystasz z niej tylko wtedy, gdy sam zdecydujesz.\\n'
+                  '3. Twoja baza medyczna trafia WYŁĄCZNIE na Twój prywatny Dysk Google do dedykowanego folderu ("MedPlaner Kopia Zapasowa").\\n'
+                  '4. Twórca aplikacji ani nikt inny NIE MA DOSTĘPU do Twoich danych – nie prowadzimy żadnego centralnego serwera.\\n'
+                  '5. Aplikacja prosi tylko o bezpieczne uprawnienie "drive.file", co oznacza, że widzi wyłącznie utworzony przez siebie plik kopii ("medplaner-backup.db"). Nie ma dostępu do Twoich innych dokumentów, zdjęć czy poczty.',
+                  style: TextStyle(fontSize: 13, height: 1.5, color: Color(0xFF334155)),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 20),
+
+          // Komunikat o statusie operacji
+          if (_statusMessage != null) ...[
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: _isSuccessMessage ? Colors.green.shade50 : Colors.red.shade50,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: _isSuccessMessage ? Colors.green.shade300 : Colors.red.shade300),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    _isSuccessMessage ? Icons.check_circle : Icons.error_outline,
+                    color: _isSuccessMessage ? Colors.green.shade800 : Colors.red.shade800,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      _statusMessage!,
+                      style: TextStyle(
+                        color: _isSuccessMessage ? Colors.green.shade900 : Colors.red.shade900,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+
+          // Karta Autoryzacji Google
+          Card(
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(color: Colors.grey.shade200),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Konto Google do synchronizacji', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 12),
+                  if (user == null) ...[
+                    const Text(
+                      'Nie jesteś zalogowany. Zaloguj się, aby zapisać kopię bazy danych na swoim Dysku Google lub przywrócić ją po reinstalacji.',
+                      style: TextStyle(color: Colors.grey, fontSize: 13),
+                    ),
+                    const SizedBox(height: 16),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: Colors.black87,
+                        side: BorderSide(color: Colors.grey.shade300),
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      icon: Image.network(
+                        'https://developers.google.com/identity/images/g-logo.png',
+                        width: 20,
+                        height: 20,
+                        errorBuilder: (_, __, ___) => const Icon(Icons.account_circle, color: Colors.blue),
+                      ),
+                      label: const Text('Zaloguj przez Google', style: TextStyle(fontWeight: FontWeight.bold)),
+                      onPressed: _isLoading ? null : _handleSignIn,
+                    ),
+                  ] else ...[
+                    Row(
+                      children: [
+                        CircleAvatar(
+                          backgroundColor: Colors.teal.shade100,
+                          child: Text(
+                            (user.displayName ?? user.email).substring(0, 1).toUpperCase(),
+                            style: TextStyle(color: Colors.teal.shade900, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(user.displayName ?? 'Użytkownik Google', style: const TextStyle(fontWeight: FontWeight.bold)),
+                              Text(user.email, style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+                            ],
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: _isLoading ? null : _handleSignOut,
+                          child: const Text('Wyloguj', style: TextStyle(color: Colors.redAccent)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
+          // Karta akcji: Kopia i Przywracanie
+          Card(
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(color: Colors.grey.shade200),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Kopia zapasowa w chmurze', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  if (_latestBackup != null) ...[
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.teal.shade50,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.cloud_done, color: Colors.teal.shade700, size: 24),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Ostatnia kopia: \${_latestBackup!.name}',
+                                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.teal.shade900),
+                                ),
+                                Text(
+                                  '\${dateFormat.format(_latestBackup!.modifiedTime.toLocal())} • \${_latestBackup!.formattedSize}',
+                                  style: TextStyle(fontSize: 12, color: Colors.teal.shade700),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ] else if (user != null) ...[
+                    Text(
+                      'Brak zapisanej kopii zapasowej na Dysku Google.',
+                      style: TextStyle(fontSize: 13, color: Colors.grey.shade600, fontStyle: FontStyle.italic),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.teal,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          icon: _isLoading
+                              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                              : const Icon(Icons.cloud_upload_outlined),
+                          label: const Text('Zapisz kopię na Dysk'),
+                          onPressed: (_isLoading || user == null) ? null : _handleBackup,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.teal,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          icon: const Icon(Icons.cloud_download_outlined),
+                          label: const Text('Przywróć z Dysku'),
+                          onPressed: (_isLoading || user == null) ? null : _handleRestore,
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (user == null) ...[
+                    const SizedBox(height: 8),
+                    const Center(
+                      child: Text(
+                        'Zaloguj się powyżej, aby aktywować tworzenie i przywracanie kopii.',
+                        style: TextStyle(fontSize: 11, color: Colors.grey),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+`,
+  },
+  {
     path: 'lib/screens/calendar_screen.dart',
     name: 'calendar_screen.dart',
     category: 'screen',
@@ -2851,6 +3645,7 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'screens/home_screen.dart';
 import 'screens/calendar_screen.dart';
 import 'screens/therapies_screen.dart';
+import 'screens/backup_sync_screen.dart';
 import 'services/database_service.dart';
 import 'services/notification_service.dart';
 
@@ -2858,10 +3653,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeDateFormatting('pl_PL', null);
 
-  // Inicjalizacja lokalnej bazy danych SQLite
   await DatabaseService.instance.database;
-
-  // Inicjalizacja powiadomień i dokładnych alarmów
   await NotificationService.instance.initialize();
 
   runApp(const MedPlanerApp());
@@ -2877,61 +3669,41 @@ class MedPlanerApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF0F766E), // Głęboki morski / teal
-          brightness: Brightness.light,
-        ),
-        appBarTheme: const AppBarTheme(
-          centerTitle: false,
-          elevation: 0,
-          backgroundColor: Colors.white,
-          foregroundColor: Colors.black87,
-        ),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0F766E)),
       ),
-      home: const MainNavigationShell(),
+      home: const MainShell(),
     );
   }
 }
 
-class MainNavigationShell extends StatefulWidget {
-  const MainNavigationShell({super.key});
+class MainShell extends StatefulWidget {
+  const MainShell({super.key});
 
   @override
-  State<MainNavigationShell> createState() => _MainNavigationShellState();
+  State<MainShell> createState() => _MainShellState();
 }
 
-class _MainNavigationShellState extends State<MainNavigationShell> {
-  int _currentIndex = 0;
-
+class _MainShellState extends State<MainShell> {
+  int _idx = 0;
   final List<Widget> _screens = const [
     HomeScreen(),
     CalendarScreen(),
     TherapiesScreen(),
+    BackupSyncScreen(),
   ];
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: _screens[_currentIndex],
+      body: _screens[_idx],
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _currentIndex,
-        onDestinationSelected: (idx) => setState(() => _currentIndex = idx),
+        selectedIndex: _idx,
+        onDestinationSelected: (i) => setState(() => _idx = i),
         destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.today_outlined),
-            selectedIcon: Icon(Icons.today),
-            label: 'Dziś',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.calendar_month_outlined),
-            selectedIcon: Icon(Icons.calendar_month),
-            label: 'Kalendarz',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.healing_outlined),
-            selectedIcon: Icon(Icons.healing),
-            label: 'Terapie',
-          ),
+          NavigationDestination(icon: Icon(Icons.today), label: 'Dziś'),
+          NavigationDestination(icon: Icon(Icons.calendar_month), label: 'Kalendarz'),
+          NavigationDestination(icon: Icon(Icons.healing), label: 'Terapie'),
+          NavigationDestination(icon: Icon(Icons.cloud_sync_outlined), label: 'Kopia & Dysk'),
         ],
       ),
     );

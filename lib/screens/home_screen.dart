@@ -4,6 +4,7 @@ import '../models/dose_log.dart';
 import '../services/database_service.dart';
 import '../widgets/snooze_bottom_sheet.dart';
 import 'add_medication_screen.dart';
+import 'backup_sync_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -67,6 +68,16 @@ class _HomeScreenState extends State<HomeScreen> {
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
         title: const Text('MedPlaner - Dzisiaj', style: TextStyle(fontWeight: FontWeight.bold)),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.cloud_sync_outlined, color: Colors.teal),
+            tooltip: 'Kopia zapasowa na Dysku Google',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const BackupSyncScreen()),
+            ),
+          ),
+        ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())

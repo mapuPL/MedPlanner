@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/therapy.dart';
@@ -8,17 +9,43 @@ class DatabaseService {
   static final DatabaseService instance = DatabaseService._internal();
   DatabaseService._internal();
 
+  static const String databaseFileName = 'medications_catalog.db';
   static Database? _database;
 
   Future<Database> get database async {
-    if (_database != null) return _database!;
+    if (_database != null && _database!.isOpen) return _database!;
     _database = await _initDatabase();
     return _database!;
   }
 
+  Future<String> getDatabaseFilePath() async {
+    final dbPath = await getDatabasesPath();
+    return join(dbPath, databaseFileName);
+  }
+
+  Future<void> closeDatabase() async {
+    if (_database != null && _database!.isOpen) {
+      await _database!.close();
+      _database = null;
+    }
+  }
+
+  Future<void> reloadDatabase() async {
+    await closeDatabase();
+    _database = await _initDatabase();
+  }
+
   Future<Database> _initDatabase() async {
     final dbPath = await getDatabasesPath();
-    final path = join(dbPath, 'medplaner.db');
+    final path = join(dbPath, databaseFileName);
+
+    // Migracja wsteczna: jeśli istniała wcześniejsza baza medplaner.db, a brak medications_catalog.db
+    final legacyPath = join(dbPath, 'medplaner.db');
+    if (!await File(path).exists() && await File(legacyPath).exists()) {
+      try {
+        await File(legacyPath).copy(path);
+      } catch (_) {}
+    }
 
     return await openDatabase(
       path,

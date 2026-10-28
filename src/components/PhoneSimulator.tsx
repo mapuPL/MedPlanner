@@ -19,7 +19,8 @@ import {
   SunMedium,
   Moon,
   Search,
-  X
+  X,
+  Cloud
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { normalizePolishText } from '../data/polishMedicationsRegistry';
@@ -37,6 +38,7 @@ import { SnoozeModal } from './SnoozeModal';
 import { AddMedicationModal } from './AddMedicationModal';
 import { AddTherapyModal } from './AddTherapyModal';
 import { NotificationBanner } from './NotificationBanner';
+import { BackupSyncView } from './BackupSyncView';
 
 interface PhoneSimulatorProps {
   therapies: Therapy[];
@@ -61,7 +63,7 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
   onAddMedication,
   onResetSampleData,
 }) => {
-  const [activeTab, setActiveTab] = useState<'today' | 'calendar' | 'therapies'>('today');
+  const [activeTab, setActiveTab] = useState<'today' | 'calendar' | 'therapies' | 'sync'>('today');
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'taken' | 'snoozed'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -181,6 +183,19 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
             </div>
 
             <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setActiveTab('sync')}
+                className={`p-1.5 rounded-lg transition-colors text-xs font-semibold flex items-center gap-1 ${
+                  activeTab === 'sync'
+                    ? 'bg-teal-100 text-teal-800 font-bold'
+                    : 'text-teal-700 hover:bg-teal-50'
+                }`}
+                title="Kopia zapasowa w chmurze (Google Drive)"
+              >
+                <Cloud className="w-4 h-4" />
+                <span className="text-2xs hidden xs:inline">Kopia</span>
+              </button>
               <button
                 type="button"
                 onClick={() => setIsAddTherapyOpen(true)}
@@ -606,10 +621,19 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
               </div>
             )}
 
+            {/* TAB 4: KOPIA I DYSK GOOGLE */}
+            {activeTab === 'sync' && (
+              <BackupSyncView
+                therapies={therapies}
+                medications={medications}
+                onRestoreSampleBackup={onResetSampleData}
+              />
+            )}
+
           </div>
 
           {/* Bottom Navigation Bar */}
-          <div className="bg-white border-t border-slate-200 px-6 py-2.5 flex items-center justify-around shrink-0 shadow-lg">
+          <div className="bg-white border-t border-slate-200 px-4 py-2 flex items-center justify-around shrink-0 shadow-lg">
             <button
               type="button"
               onClick={() => setActiveTab('today')}
@@ -641,6 +665,17 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
             >
               <Layers className="w-5 h-5" />
               <span className="text-2xs">Terapie</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('sync')}
+              className={`flex flex-col items-center gap-1 transition-colors ${
+                activeTab === 'sync' ? 'text-teal-700 font-bold' : 'text-slate-400 hover:text-slate-600'
+              }`}
+            >
+              <Cloud className="w-5 h-5" />
+              <span className="text-2xs">Kopia i Dysk</span>
             </button>
           </div>
 
