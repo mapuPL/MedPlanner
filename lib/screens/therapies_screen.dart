@@ -260,7 +260,7 @@ class _TherapiesScreenState extends State<TherapiesScreen> {
                                     decoration: BoxDecoration(
                                       color: Colors.white,
                                       borderRadius: BorderRadius.circular(10),
-                                      border: BorderSide(color: Colors.grey.shade200),
+                                      border: Border.all(color: Colors.grey.shade200),
                                     ),
                                     child: Row(
                                       children: [
