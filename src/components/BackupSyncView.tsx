@@ -273,6 +273,77 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
         )}
       </div>
 
+      {/* Local SQLite Backup Card (Works 100% offline without Google Sign-In) */}
+      <div className="bg-white rounded-2xl p-4 border border-teal-200/80 shadow-xs">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <div className="p-1.5 bg-teal-50 text-teal-700 rounded-lg">
+              <Database className="w-4 h-4" />
+            </div>
+            <div>
+              <h4 className="text-xs font-bold text-slate-800">Lokalna kopia zapasowa SQLite</h4>
+              <p className="text-2xs text-slate-500">Działa natychmiast offline bez logowania i bez Google Cloud</p>
+            </div>
+          </div>
+          <span className="text-3xs font-extrabold uppercase px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+            Offline
+          </span>
+        </div>
+
+        <p className="text-2xs text-slate-600 mb-3 leading-relaxed">
+          Zrzut lokalnej bazy <code className="bg-slate-100 px-1 py-0.5 rounded text-teal-900 font-mono">medications_catalog.db</code> do pliku <code className="bg-slate-100 px-1 py-0.5 rounded text-teal-900 font-mono">medplaner-backup.db</code> w pamięci Twojego urządzenia.
+        </p>
+
+        <div className="grid grid-cols-2 gap-2.5">
+          <button
+            type="button"
+            onClick={() => {
+              const now = new Date();
+              const formatted = now.toLocaleDateString('pl-PL') + ' ' + now.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
+              setStatusMessage({
+                text: `Wyeksportowano lokalną kopię (medplaner-backup.db) o ${formatted}. Plik zapisany w pamięci urządzenia.`,
+              });
+            }}
+            className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl font-bold text-xs border border-teal-600 text-teal-800 hover:bg-teal-50 transition-colors cursor-pointer"
+          >
+            <FileText className="w-3.5 h-3.5" />
+            <span>Zapisz plik .db</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm('Czy na pewno chcesz przywrócić bazę z lokalnego pliku kopii zapasowej?')) {
+                if (onRestoreSampleBackup) onRestoreSampleBackup();
+                setStatusMessage({
+                  text: 'Baza SQLite została pomyślnie przywrócona z pliku medplaner-backup.db.',
+                });
+              }
+            }}
+            className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl font-bold text-xs border border-slate-300 text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer"
+          >
+            <Database className="w-3.5 h-3.5" />
+            <span>Wczytaj plik .db</span>
+          </button>
+        </div>
+      </div>
+
+      {/* SHA-1 Developer Help Card */}
+      <div className="bg-amber-50/70 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900">
+        <div className="flex items-start gap-2.5">
+          <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+          <div className="space-y-1.5">
+            <h5 className="font-bold text-amber-950 text-xs">Informacja dla programistów: Błąd ApiException: 10</h5>
+            <p className="text-2xs text-amber-800 leading-relaxed">
+              Jeśli podczas logowania przez Gmail w aplikacji mobilnej pojawi się błąd <code className="bg-amber-100 px-1 py-0.2 rounded font-mono font-bold text-amber-950">ApiException: 10 (DEVELOPER_ERROR)</code>, oznacza to, że Google Play Services wymaga zarejestrowania odcisku certyfikatu <strong>SHA-1</strong> dla pakietu <strong>com.example.medplaner</strong> w Google Cloud Console (Credentials &rarr; OAuth Client ID &rarr; Android).
+            </p>
+            <p className="text-2xs text-amber-800">
+              Odcisk SHA-1 kompilacji jest automatycznie drukowany w logach GitHub Actions (krok <em>"Odczytaj odciski certyfikatów SHA-1"</em>) lub po uruchomieniu polecenia <code className="bg-amber-100 px-1 py-0.2 rounded font-mono font-bold text-amber-950">./gradlew signingReport</code>.
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Confirmation Modal for Restore */}
       {showConfirmRestore && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">

@@ -219,6 +219,11 @@ export default function App() {
     );
   };
 
+  const handleDeleteMedication = (medicationId: string) => {
+    setMedications((prev) => prev.filter((m) => m.id !== medicationId));
+    setDoses((prev) => prev.filter((d) => d.medicationId !== medicationId));
+  };
+
   const handleAddTherapy = (newTherapyData: Omit<Therapy, 'id' | 'createdAt'>) => {
     const newTherapy: Therapy = {
       ...newTherapyData,
@@ -342,6 +347,7 @@ export default function App() {
             onSkipDose={handleSkipDose}
             onAddTherapy={handleAddTherapy}
             onAddMedication={handleAddMedication}
+            onDeleteMedication={handleDeleteMedication}
             onResetSampleData={handleResetSampleData}
           />
         ) : (

@@ -49,6 +49,23 @@ class SyncResult {
   SyncResult({required this.success, required this.message, this.backupInfo});
 }
 
+class GoogleAuthException implements Exception {
+  final int code;
+  final String title;
+  final String message;
+  final String rawError;
+
+  const GoogleAuthException({
+    required this.code,
+    required this.title,
+    required this.message,
+    required this.rawError,
+  });
+
+  @override
+  String toString() => '$title: $message';
+}
+
 class GoogleDriveSyncService {
   static final GoogleDriveSyncService instance = GoogleDriveSyncService._internal();
   GoogleDriveSyncService._internal();
@@ -88,6 +105,20 @@ class GoogleDriveSyncService {
       return account;
     } catch (e) {
       debugPrint('Błąd logowania Google Sign-In: $e');
+      final errorStr = e.toString();
+      if (errorStr.contains('ApiException: 10') ||
+          errorStr.contains(': 10:') ||
+          errorStr.contains('status 10') ||
+          errorStr.contains('code: 10')) {
+        throw GoogleAuthException(
+          code: 10,
+          title: 'Wymagana konfiguracja SHA-1 w Google Cloud (ApiException: 10)',
+          message: 'Google Play Services odrzuciło autoryzację z błędem DEVELOPER_ERROR (kod 10).\n\n'
+              'Oznacza to, że odcisk cyfrowy SHA-1 certyfikatu aplikacji nie został jeszcze zarejestrowany '
+              'w Google Cloud Console dla pakietu "com.example.medplaner".',
+          rawError: errorStr,
+        );
+      }
       rethrow;
     }
   }

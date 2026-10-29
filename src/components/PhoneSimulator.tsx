@@ -20,7 +20,8 @@ import {
   Moon,
   Search,
   X,
-  Cloud
+  Cloud,
+  Trash2
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { normalizePolishText } from '../data/polishMedicationsRegistry';
@@ -49,6 +50,7 @@ interface PhoneSimulatorProps {
   onSkipDose: (doseId: string) => void;
   onAddTherapy: (therapy: Omit<Therapy, 'id' | 'createdAt'>) => void;
   onAddMedication: (medication: Omit<Medication, 'id'>) => void;
+  onDeleteMedication?: (medicationId: string) => void;
   onResetSampleData: () => void;
 }
 
@@ -61,6 +63,7 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
   onSkipDose,
   onAddTherapy,
   onAddMedication,
+  onDeleteMedication,
   onResetSampleData,
 }) => {
   const [activeTab, setActiveTab] = useState<'today' | 'calendar' | 'therapies' | 'sync'>('today');
@@ -600,17 +603,33 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                           therapyMeds.map((m) => (
                             <div
                               key={m.id}
-                              className="bg-white p-2.5 rounded-lg border border-slate-200 flex items-center justify-between text-xs"
+                              className="bg-white p-2.5 rounded-lg border border-slate-200 flex items-center justify-between text-xs hover:border-slate-300 transition-colors"
                             >
-                              <div>
-                                <div className="font-bold text-slate-800">{m.name}</div>
-                                <div className="text-2xs text-slate-500">
-                                  Dawka: {m.doseAmount} ({m.type}) • Godziny: {m.times.join(', ')}
+                              <div className="flex-1 min-w-0 pr-2">
+                                <div className="font-bold text-slate-800 truncate">{m.name}</div>
+                                <div className="text-2xs text-slate-500 mt-0.5">
+                                  Dawka: <span className="font-semibold text-teal-700">{m.doseAmount} ({m.type})</span> • Godziny: {m.times.join(', ')}
                                 </div>
                               </div>
-                              <span className="text-2xs font-semibold text-teal-700 bg-teal-50 px-2 py-0.5 rounded-md">
-                                {m.scheduleType === 'daily' ? 'Codziennie' : 'Harmonogram'}
-                              </span>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <span className="text-3xs font-semibold text-teal-700 bg-teal-50 border border-teal-100 px-1.5 py-0.5 rounded-md">
+                                  {m.scheduleType === 'daily' ? 'Codziennie' : 'Harmonogram'}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (window.confirm(`Czy na pewno chcesz usunąć lek "${m.name}" z terapii "${therapy.name}"? Usunięte zostaną także zaplanowane dla niego dawki.`)) {
+                                      if (onDeleteMedication) {
+                                        onDeleteMedication(m.id);
+                                      }
+                                    }
+                                  }}
+                                  className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition-colors"
+                                  title="Usuń lek z terapii"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
                             </div>
                           ))
                         )}

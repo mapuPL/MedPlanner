@@ -61,14 +61,31 @@ class MedicationRegistryService {
       // Antybiotyki
       {'name': 'Amotaks', 'sub': 'Amoxicillinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['500 mg', '1 g'], 'q': '1', 'inst': 'Po posiłku, popić pełną szklanką wody'},
       {'name': 'Amotaks Dispertab', 'sub': 'Amoxicillinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['500 mg', '750 mg', '1 g'], 'q': '1', 'inst': 'Rozpuścić w niewielkiej ilości wody lub połknąć'},
+      {'name': 'Auglavin', 'sub': 'Amoxicillinum + Acidum clavulanicum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['875 mg + 125 mg', '500 mg + 125 mg'], 'q': '1', 'inst': 'Na początku posiłku w równych odstępach co 12h'},
+      {'name': 'Auglavin PPH', 'sub': 'Amoxicillinum + Acidum clavulanicum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['875 mg + 125 mg', '500 mg + 125 mg'], 'q': '1', 'inst': 'Na początku posiłku, popić wodą'},
+      {'name': 'Auglavin Extra', 'sub': 'Amoxicillinum + Acidum clavulanicum', 'cat': 'Antybiotyki', 'type': 'ml', 'doses': ['zawiesina 400 mg + 57 mg/5 ml'], 'q': '5', 'inst': 'Wstrząsnąć przed użyciem, na początku posiłku'},
       {'name': 'Augmentin', 'sub': 'Amoxicillinum + Acidum clavulanicum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['625 mg', '1 g (875 mg + 125 mg)'], 'q': '1', 'inst': 'Na początku posiłku'},
+      {'name': 'Taromentin', 'sub': 'Amoxicillinum + Acidum clavulanicum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['875 mg + 125 mg', '500 mg + 125 mg'], 'q': '1', 'inst': 'Na początku posiłku'},
       {'name': 'Duomox', 'sub': 'Amoxicillinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['500 mg', '750 mg', '1 g'], 'q': '1', 'inst': 'W trakcie lub po posiłku'},
       {'name': 'Zinnat', 'sub': 'Cefuroximum axetil', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['250 mg', '500 mg'], 'q': '1', 'inst': 'Zaraz po posiłku'},
       {'name': 'Klacid', 'sub': 'Clarithromycinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['250 mg', '500 mg', '500 mg Uno'], 'q': '1', 'inst': 'Niezależnie od posiłków, co 12h'},
       {'name': 'Sumamed', 'sub': 'Azithromycinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['250 mg', '500 mg'], 'q': '1', 'inst': '1h przed lub 2h po posiłku'},
+      {'name': 'Macromax', 'sub': 'Azithromycinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['500 mg'], 'q': '1', 'inst': 'Raz na dobę o stałej porze'},
       {'name': 'Biseptol', 'sub': 'Sulfamethoxazolum + Trimethoprimum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['480 mg', '960 mg'], 'q': '1', 'inst': 'Po posiłku z dużą ilością płynu'},
       {'name': 'Cipronex', 'sub': 'Ciprofloxacinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['250 mg', '500 mg'], 'q': '1', 'inst': 'Niezależnie od posiłków, nie z nabiałem'},
       {'name': 'Monural', 'sub': 'Fosfomycinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['3 g saszetka'], 'q': '1', 'inst': 'Wieczorem przed snem, po opróżnieniu pęcherza'},
+      {'name': 'Xifaxan', 'sub': 'Rifaximinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['200 mg'], 'q': '1', 'inst': 'Doustnie, popić szklanką wody'},
+
+      // Leki przeciwgrzybicze i przeciwwirusowe
+      {'name': 'Flucofast', 'sub': 'Fluconazolum', 'cat': 'Przeciwgrzybicze', 'type': 'capsule', 'doses': ['50 mg', '100 mg', '150 mg', '200 mg'], 'q': '1', 'inst': 'Niezależnie od posiłków, popić dużą ilością wody'},
+      {'name': 'Diflucan', 'sub': 'Fluconazolum', 'cat': 'Przeciwgrzybicze', 'type': 'capsule', 'doses': ['50 mg', '150 mg'], 'q': '1', 'inst': 'Raz dziennie lub jednorazowo wg zaleceń'},
+      {'name': 'Trioxal', 'sub': 'Itraconazolum', 'cat': 'Przeciwgrzybicze', 'type': 'capsule', 'doses': ['100 mg'], 'q': '1', 'inst': 'Bezpośrednio po głównym posiłku'},
+      {'name': 'Heviran', 'sub': 'Aciclovirum', 'cat': 'Przeciwwirusowe', 'type': 'capsule', 'doses': ['200 mg', '400 mg', '800 mg'], 'q': '1', 'inst': 'W trakcie posiłku, dbać o nawodnienie'},
+      {'name': 'Hascovir', 'sub': 'Aciclovirum', 'cat': 'Przeciwwirusowe', 'type': 'capsule', 'doses': ['200 mg', '400 mg'], 'q': '1', 'inst': 'Co 4 godziny w ciągu dnia'},
+
+      // Glikokortykosteroidy
+      {'name': 'Metypred', 'sub': 'Methylprednisolonum', 'cat': 'Kortykosteroidy', 'type': 'capsule', 'doses': ['4 mg', '8 mg', '16 mg'], 'q': '1', 'inst': 'Rano po śniadaniu, z osłoną żołądka'},
+      {'name': 'Encorton', 'sub': 'Prednisonum', 'cat': 'Kortykosteroidy', 'type': 'capsule', 'doses': ['1 mg', '5 mg', '10 mg', '20 mg'], 'q': '1', 'inst': 'Rano w trakcie posiłku, nie na czczo'},
 
       // Przeciwbólowe i NLPZ
       {'name': 'Apap', 'sub': 'Paracetamolum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['500 mg', 'Extra 500 mg + 65 mg'], 'q': '1', 'inst': 'Doraźnie w bólu, co 4-6h'},

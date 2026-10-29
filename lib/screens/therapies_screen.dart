@@ -66,6 +66,53 @@ class _TherapiesScreenState extends State<TherapiesScreen> {
     }
   }
 
+  Future<void> _deleteMedicationFromTherapy(Medication med, String therapyName) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.delete_outline, color: Colors.redAccent, size: 24),
+            SizedBox(width: 8),
+            Text('Usunąć lek z terapii?'),
+          ],
+        ),
+        content: Text(
+          'Czy na pewno chcesz usunąć lek "${med.name}" z terapii "$therapyName"?\n\n'
+          'Spowoduje to również usunięcie wszystkich zaplanowanych dla niego dawek z harmonogramu.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Anuluj'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Usuń lek'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      await DatabaseService.instance.deleteMedication(med.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Lek "${med.name}" został usunięty.'),
+            backgroundColor: Colors.teal.shade800,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+        _loadData();
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -204,19 +251,51 @@ class _TherapiesScreenState extends State<TherapiesScreen> {
                               ],
                             ),
                             if (meds.isNotEmpty) ...[
-                              const SizedBox(height: 6),
-                              Wrap(
-                                spacing: 6,
-                                runSpacing: 6,
+                              const SizedBox(height: 8),
+                              Column(
                                 children: meds.map((m) {
-                                  return Chip(
-                                    visualDensity: VisualDensity.compact,
-                                    backgroundColor: Colors.teal.shade50,
-                                    side: BorderSide(color: Colors.teal.shade100),
-                                    avatar: const Icon(Icons.medication, size: 14, color: Colors.teal),
-                                    label: Text(
-                                      '${m.name} (${m.formatDose()})',
-                                      style: TextStyle(fontSize: 12, color: Colors.teal.shade900),
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 6),
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: BorderSide(color: Colors.grey.shade200),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.all(6),
+                                          decoration: BoxDecoration(
+                                            color: Colors.teal.shade50,
+                                            borderRadius: BorderRadius.circular(8),
+                                          ),
+                                          child: Icon(Icons.medication_outlined, size: 18, color: Colors.teal.shade700),
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                m.name,
+                                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                              ),
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                'Dawka: ${m.formatDose()} • Godziny: ${m.times.join(", ")}',
+                                                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        IconButton(
+                                          icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+                                          tooltip: 'Usuń lek z terapii',
+                                          visualDensity: VisualDensity.compact,
+                                          onPressed: () => _deleteMedicationFromTherapy(m, therapy.name),
+                                        ),
+                                      ],
                                     ),
                                   );
                                 }).toList(),

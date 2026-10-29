@@ -14,18 +14,21 @@ export const FLUTTER_PROJECT_FILES: FlutterFile[] = [
     category: 'config',
     language: 'yaml',
     description: 'Automatyczne budowanie pliku APK i publikacja artefaktu przy każdym pushu na GitHub Actions',
-    content: `name: Build Flutter APK
+    content: `name: Build Android APK
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ "main", "master" ]
   pull_request:
-    branches: [ main, master ]
-  workflow_dispatch: # Pozwala na reczne uruchomienie z zakladki Actions w GitHub
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  build-apk:
-    name: Build Android APK
+  build:
+    name: Build Flutter Android APK
     runs-on: ubuntu-latest
 
     steps:
@@ -43,26 +46,60 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Weryfikacja struktury Androida
+      - name: Przygotowanie platformy Android i zgodności JVM
         run: |
+          # Jeśli w repozytorium brakuje otoczki Gradle/Android, Flutter wygeneruje ją automatycznie
           if [ ! -f "android/build.gradle" ] || [ ! -f "android/settings.gradle" ]; then
-            echo "Inicjalizacja otoczki platformy Android..."
+            echo "Inicjalizacja brakującej otoczki Android..."
             flutter create . --platforms=android --org=com.example --project-name=medplaner
           fi
 
-      - name: Pobranie zaleznosci (pub get)
+          # Wymuszenie zgodności wersji JVM (Java 17 i Kotlin JVM target 17)
+          mkdir -p android
+          echo "kotlin.jvm.target.validation.mode=warning" >> android/gradle.properties
+
+          if [ -f "android/app/build.gradle" ]; then
+            sed -i "s/jvmTarget = '1.8'/jvmTarget = '17'/g" android/app/build.gradle
+            sed -i 's/jvmTarget = "1.8"/jvmTarget = "17"/g' android/app/build.gradle
+            sed -i "s/JavaVersion.VERSION_1_8/JavaVersion.VERSION_17/g" android/app/build.gradle
+            sed -i "s/JavaVersion.VERSION_11/JavaVersion.VERSION_17/g" android/app/build.gradle
+            sed -i "s/compileSdkVersion [0-9]\\+/compileSdkVersion 36/g" android/app/build.gradle
+            sed -i "s/targetSdkVersion [0-9]\\+/targetSdkVersion 36/g" android/app/build.gradle
+            sed -i "s/compileSdk = [0-9]\\+/compileSdk = 36/g" android/app/build.gradle
+            sed -i "s/targetSdk = [0-9]\\+/targetSdk = 36/g" android/app/build.gradle
+          fi
+
+      - name: Pobranie zależności Flutter (pub get)
         run: flutter pub get
+
+      - name: Odczytaj odciski certyfikatów SHA-1 i SHA-256 dla Google Sign-In
+        run: |
+          echo "================================================================================"
+          echo "ODCISKI KLUCZY CERTYFIKATÓW DLA GOOGLE CLOUD CONSOLE (OAUTH CLIENT ID ANDROID):"
+          echo "Pakiet aplikacji (Package name): com.example.medplaner"
+          echo "================================================================================"
+          if [ -d "android" ]; then
+            cd android
+            echo "--- Raport podpisów Gradle (signingReport) ---"
+            ./gradlew signingReport || true
+            cd ..
+          fi
+          if [ -f "$HOME/.android/debug.keystore" ]; then
+            echo "--- Domyślny debug.keystore SHA-1: ---"
+            keytool -list -v -keystore "$HOME/.android/debug.keystore" -alias androiddebugkey -storepass android -keypass android | grep -E "SHA1:|SHA256:" || true
+          fi
+          echo "================================================================================"
 
       - name: Budowanie pliku APK Release
         run: flutter build apk --release
 
-      - name: Zapisz plik APK jako artefakt do pobrania
+      - name: Zapisz plik APK jako artefakt
         uses: actions/upload-artifact@v4
         with:
-          name: medplaner-app-release-apk
+          name: medplaner-release-apk
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14
 `,
   },
   {
@@ -633,6 +670,7 @@ class DoseLog {
     content: `import 'dart:io';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
+import 'package:path_provider/path_provider.dart';
 import '../models/therapy.dart';
 import '../models/medication.dart';
 import '../models/dose_log.dart';
@@ -665,6 +703,29 @@ class DatabaseService {
   Future<void> reloadDatabase() async {
     await closeDatabase();
     _database = await _initDatabase();
+  }
+
+  /// Eksport lokalnej kopii zapasowej do pliku medplaner-backup.db w katalogu dokumentów
+  Future<File> exportBackupFile() async {
+    final dbPath = await getDatabaseFilePath();
+    final dbFile = File(dbPath);
+    if (!await dbFile.exists()) {
+      await database; // Utworzenie bazy jeśli jeszcze nie powstała
+    }
+    final dir = await getApplicationDocumentsDirectory();
+    final backupFile = File(join(dir.path, 'medplaner-backup.db'));
+    return await dbFile.copy(backupFile.path);
+  }
+
+  /// Przywrócenie bazy z pliku kopii zapasowej
+  Future<bool> restoreFromBackupFile(String filePath) async {
+    final backupFile = File(filePath);
+    if (!await backupFile.exists()) return false;
+    final dbPath = await getDatabaseFilePath();
+    await closeDatabase();
+    await backupFile.copy(dbPath);
+    await reloadDatabase();
+    return true;
   }
 
   Future<Database> _initDatabase() async {
@@ -1127,6 +1188,23 @@ class SyncResult {
   SyncResult({required this.success, required this.message, this.backupInfo});
 }
 
+class GoogleAuthException implements Exception {
+  final int code;
+  final String title;
+  final String message;
+  final String rawError;
+
+  const GoogleAuthException({
+    required this.code,
+    required this.title,
+    required this.message,
+    required this.rawError,
+  });
+
+  @override
+  String toString() => '$title: $message';
+}
+
 class GoogleDriveSyncService {
   static final GoogleDriveSyncService instance = GoogleDriveSyncService._internal();
   GoogleDriveSyncService._internal();
@@ -1166,6 +1244,20 @@ class GoogleDriveSyncService {
       return account;
     } catch (e) {
       debugPrint('Błąd logowania Google Sign-In: $e');
+      final errorStr = e.toString();
+      if (errorStr.contains('ApiException: 10') ||
+          errorStr.contains(': 10:') ||
+          errorStr.contains('status 10') ||
+          errorStr.contains('code: 10')) {
+        throw GoogleAuthException(
+          code: 10,
+          title: 'Wymagana konfiguracja SHA-1 w Google Cloud (ApiException: 10)',
+          message: 'Google Play Services odrzuciło autoryzację z błędem DEVELOPER_ERROR (kod 10).\\n\\n'
+              'Oznacza to, że odcisk cyfrowy SHA-1 certyfikatu aplikacji nie został jeszcze zarejestrowany '
+              'w Google Cloud Console dla pakietu "com.example.medplaner".',
+          rawError: errorStr,
+        );
+      }
       rethrow;
     }
   }
@@ -1476,6 +1568,7 @@ class MedicationRegistryService {
   static final MedicationRegistryService instance = MedicationRegistryService._internal();
   MedicationRegistryService._internal();
 
+  // Baza leków oparta na oficjalnych rejestrach URPL / NFZ
   static final List<RegisteredMedicine> _registry = _buildInitialRegistry();
 
   static List<RegisteredMedicine> _buildInitialRegistry() {
@@ -1483,34 +1576,102 @@ class MedicationRegistryService {
     int id = 1;
 
     final templates = [
-      {'name': 'Amotaks', 'sub': 'Amoxicillinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['500 mg', '1 g'], 'q': '1', 'inst': 'Co 8h lub co 12h, po posiłku'},
-      {'name': 'Augmentin', 'sub': 'Amoxicillinum + Acidum clavulanicum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['625 mg', '875 mg + 125 mg'], 'q': '1', 'inst': 'Na początku posiłku'},
-      {'name': 'Zinnat', 'sub': 'Cefuroximum axetil', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['250 mg', '500 mg'], 'q': '1', 'inst': 'Krótko po posiłku'},
-      {'name': 'Sumamed', 'sub': 'Azithromycinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['250 mg', '500 mg'], 'q': '1', 'inst': '1h przed lub 2h po jedzeniu'},
-      {'name': 'Cipronex', 'sub': 'Ciprofloxacinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['250 mg', '500 mg'], 'q': '1', 'inst': 'Popić dużą ilością wody'},
-      {'name': 'Dalacin C', 'sub': 'Clindamycinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['150 mg', '300 mg'], 'q': '1', 'inst': 'Popić pełną szklanką wody na stojąco'},
-      {'name': 'Biseptol 960', 'sub': 'Sulfamethoxazolum + Trimethoprimum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['960 mg'], 'q': '1', 'inst': 'Po jedzeniu, dużo płynów'},
-      {'name': 'Acard', 'sub': 'Acidum acetylsalicylicum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['75 mg', '150 mg'], 'q': '1', 'inst': 'Po obiedzie lub wieczorem'},
-      {'name': 'Polocard', 'sub': 'Acidum acetylsalicylicum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['75 mg', '150 mg'], 'q': '1', 'inst': 'W trakcie lub po posiłku'},
-      {'name': 'Concor Cor', 'sub': 'Bisoprololi fumaras', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['1.25 mg', '2.5 mg', '5 mg', '10 mg'], 'q': '1', 'inst': 'Rano na czczo lub podczas śniadania'},
-      {'name': 'Betaloc ZOK', 'sub': 'Metoprololi succinas', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['25 mg', '50 mg', '100 mg'], 'q': '1', 'inst': 'Rano, popić wodą'},
-      {'name': 'Nebilet', 'sub': 'Nebivololum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['5 mg'], 'q': '1', 'inst': 'Codziennie o stałej porze'},
-      {'name': 'Prestarium', 'sub': 'Perindoprilum argininum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['5 mg', '10 mg'], 'q': '1', 'inst': 'Rano przed posiłkiem'},
-      {'name': 'Atorvasterol', 'sub': 'Atorvastatinum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['10 mg', '20 mg', '40 mg'], 'q': '1', 'inst': 'Wieczorem'},
-      {'name': 'Glucophage XR', 'sub': 'Metformini hydrochloridum', 'cat': 'Cukrzyca', 'type': 'capsule', 'doses': ['500 mg', '750 mg', '1000 mg'], 'q': '1', 'inst': 'Wieczorem w trakcie kolacji'},
-      {'name': 'Metformax', 'sub': 'Metformini hydrochloridum', 'cat': 'Cukrzyca', 'type': 'capsule', 'doses': ['500 mg', '850 mg', '1000 mg'], 'q': '1', 'inst': 'W trakcie lub bezpośrednio po posiłku'},
-      {'name': 'Ventolin', 'sub': 'Salbutamolum', 'cat': 'Układ oddechowy', 'type': 'inhaler', 'doses': ['100 mcg/dawkę'], 'q': '1-2', 'inst': 'W razie duszności / skurczu oskrzeli'},
-      {'name': 'Berodual N', 'sub': 'Fenoterolum + Ipratropii bromidum', 'cat': 'Układ oddechowy', 'type': 'inhaler', 'doses': ['aerozol'], 'q': '1-2', 'inst': 'Głęboki wdech z dozownika'},
-      {'name': 'Euthyrox N', 'sub': 'Levothyroxinum natricum', 'cat': 'Endokrynologia', 'type': 'capsule', 'doses': ['25 mcg', '50 mcg', '75 mcg', '100 mcg'], 'q': '1', 'inst': 'Rano min. 30 minut przed śniadaniem'},
-      {'name': 'Letrox', 'sub': 'Levothyroxinum natricum', 'cat': 'Endokrynologia', 'type': 'capsule', 'doses': ['50 mcg', '75 mcg', '100 mcg'], 'q': '1', 'inst': 'Rano na czczo z wodą'},
-      {'name': 'Controloc', 'sub': 'Pantoprazolum', 'cat': 'Układ pokarmowy', 'type': 'capsule', 'doses': ['20 mg', '40 mg'], 'q': '1', 'inst': 'Rano 30 min przed pierwszym posiłkiem'},
-      {'name': 'Nolpaza', 'sub': 'Pantoprazolum', 'cat': 'Układ pokarmowy', 'type': 'capsule', 'doses': ['20 mg', '40 mg'], 'q': '1', 'inst': 'Rano na czczo'},
-      {'name': 'Hyabak', 'sub': 'Natrii hyaluronas', 'cat': 'Krople do oczu', 'type': 'drops', 'doses': ['0.15% krople'], 'q': '1', 'inst': 'Po 1 kropli do worka spojówkowego'},
-      {'name': 'Tobrex', 'sub': 'Tobramycinum', 'cat': 'Krople do oczu', 'type': 'drops', 'doses': ['0.3% krople'], 'q': '1-2', 'inst': 'Do oka zgodnie z zaleceniem lekarza'},
-      {'name': 'Otrivin', 'sub': 'Xylometazolini hydrochloridum', 'cat': 'Krople do nosa', 'type': 'application', 'doses': ['0.1% aerozol'], 'q': '1', 'inst': 'Maksymalnie przez 5-7 dni'},
-      {'name': 'Apap', 'sub': 'Paracetamolum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['500 mg'], 'q': '1-2', 'inst': 'Doraźnie w bólu, co 4-6h'},
-      {'name': 'Ibuprom', 'sub': 'Ibuprofenum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['200 mg', '400 mg'], 'q': '1', 'inst': 'Po posiłku'},
-      {'name': 'Ketonal Active', 'sub': 'Ketoprofenum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['50 mg'], 'q': '1', 'inst': 'Po jedzeniu, popić wodą'},
+      // Antybiotyki
+      {'name': 'Amotaks', 'sub': 'Amoxicillinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['500 mg', '1 g'], 'q': '1', 'inst': 'Po posiłku, popić pełną szklanką wody'},
+      {'name': 'Amotaks Dispertab', 'sub': 'Amoxicillinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['500 mg', '750 mg', '1 g'], 'q': '1', 'inst': 'Rozpuścić w niewielkiej ilości wody lub połknąć'},
+      {'name': 'Auglavin', 'sub': 'Amoxicillinum + Acidum clavulanicum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['875 mg + 125 mg', '500 mg + 125 mg'], 'q': '1', 'inst': 'Na początku posiłku w równych odstępach co 12h'},
+      {'name': 'Auglavin PPH', 'sub': 'Amoxicillinum + Acidum clavulanicum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['875 mg + 125 mg', '500 mg + 125 mg'], 'q': '1', 'inst': 'Na początku posiłku, popić wodą'},
+      {'name': 'Auglavin Extra', 'sub': 'Amoxicillinum + Acidum clavulanicum', 'cat': 'Antybiotyki', 'type': 'ml', 'doses': ['zawiesina 400 mg + 57 mg/5 ml'], 'q': '5', 'inst': 'Wstrząsnąć przed użyciem, na początku posiłku'},
+      {'name': 'Augmentin', 'sub': 'Amoxicillinum + Acidum clavulanicum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['625 mg', '1 g (875 mg + 125 mg)'], 'q': '1', 'inst': 'Na początku posiłku'},
+      {'name': 'Taromentin', 'sub': 'Amoxicillinum + Acidum clavulanicum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['875 mg + 125 mg', '500 mg + 125 mg'], 'q': '1', 'inst': 'Na początku posiłku'},
+      {'name': 'Duomox', 'sub': 'Amoxicillinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['500 mg', '750 mg', '1 g'], 'q': '1', 'inst': 'W trakcie lub po posiłku'},
+      {'name': 'Zinnat', 'sub': 'Cefuroximum axetil', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['250 mg', '500 mg'], 'q': '1', 'inst': 'Zaraz po posiłku'},
+      {'name': 'Klacid', 'sub': 'Clarithromycinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['250 mg', '500 mg', '500 mg Uno'], 'q': '1', 'inst': 'Niezależnie od posiłków, co 12h'},
+      {'name': 'Sumamed', 'sub': 'Azithromycinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['250 mg', '500 mg'], 'q': '1', 'inst': '1h przed lub 2h po posiłku'},
+      {'name': 'Macromax', 'sub': 'Azithromycinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['500 mg'], 'q': '1', 'inst': 'Raz na dobę o stałej porze'},
+      {'name': 'Biseptol', 'sub': 'Sulfamethoxazolum + Trimethoprimum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['480 mg', '960 mg'], 'q': '1', 'inst': 'Po posiłku z dużą ilością płynu'},
+      {'name': 'Cipronex', 'sub': 'Ciprofloxacinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['250 mg', '500 mg'], 'q': '1', 'inst': 'Niezależnie od posiłków, nie z nabiałem'},
+      {'name': 'Monural', 'sub': 'Fosfomycinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['3 g saszetka'], 'q': '1', 'inst': 'Wieczorem przed snem, po opróżnieniu pęcherza'},
+      {'name': 'Xifaxan', 'sub': 'Rifaximinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['200 mg'], 'q': '1', 'inst': 'Doustnie, popić szklanką wody'},
+
+      // Leki przeciwgrzybicze i przeciwwirusowe
+      {'name': 'Flucofast', 'sub': 'Fluconazolum', 'cat': 'Przeciwgrzybicze', 'type': 'capsule', 'doses': ['50 mg', '100 mg', '150 mg', '200 mg'], 'q': '1', 'inst': 'Niezależnie od posiłków, popić dużą ilością wody'},
+      {'name': 'Diflucan', 'sub': 'Fluconazolum', 'cat': 'Przeciwgrzybicze', 'type': 'capsule', 'doses': ['50 mg', '150 mg'], 'q': '1', 'inst': 'Raz dziennie lub jednorazowo wg zaleceń'},
+      {'name': 'Trioxal', 'sub': 'Itraconazolum', 'cat': 'Przeciwgrzybicze', 'type': 'capsule', 'doses': ['100 mg'], 'q': '1', 'inst': 'Bezpośrednio po głównym posiłku'},
+      {'name': 'Heviran', 'sub': 'Aciclovirum', 'cat': 'Przeciwwirusowe', 'type': 'capsule', 'doses': ['200 mg', '400 mg', '800 mg'], 'q': '1', 'inst': 'W trakcie posiłku, dbać o nawodnienie'},
+      {'name': 'Hascovir', 'sub': 'Aciclovirum', 'cat': 'Przeciwwirusowe', 'type': 'capsule', 'doses': ['200 mg', '400 mg'], 'q': '1', 'inst': 'Co 4 godziny w ciągu dnia'},
+
+      // Glikokortykosteroidy
+      {'name': 'Metypred', 'sub': 'Methylprednisolonum', 'cat': 'Kortykosteroidy', 'type': 'capsule', 'doses': ['4 mg', '8 mg', '16 mg'], 'q': '1', 'inst': 'Rano po śniadaniu, z osłoną żołądka'},
+      {'name': 'Encorton', 'sub': 'Prednisonum', 'cat': 'Kortykosteroidy', 'type': 'capsule', 'doses': ['1 mg', '5 mg', '10 mg', '20 mg'], 'q': '1', 'inst': 'Rano w trakcie posiłku, nie na czczo'},
+
+      // Przeciwbólowe i NLPZ
+      {'name': 'Apap', 'sub': 'Paracetamolum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['500 mg', 'Extra 500 mg + 65 mg'], 'q': '1', 'inst': 'Doraźnie w bólu, co 4-6h'},
+      {'name': 'Paracetamol Hasco', 'sub': 'Paracetamolum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['500 mg', '1000 mg'], 'q': '1', 'inst': 'Popić wodą, maks 4 g na dobę'},
+      {'name': 'Efferalgan', 'sub': 'Paracetamolum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['500 mg musujące', '1 g musujące'], 'q': '1', 'inst': 'Rozpuścić w szklance wody'},
+      {'name': 'Ibuprom', 'sub': 'Ibuprofenum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['200 mg', '400 mg Sprint', '400 mg Max'], 'q': '1', 'inst': 'Po posiłku, popić szklanką wody'},
+      {'name': 'Ibum', 'sub': 'Ibuprofenum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['200 mg', '400 mg', '600 mg'], 'q': '1', 'inst': 'Zawsze po posiłku'},
+      {'name': 'Ketonal', 'sub': 'Ketoprofenum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['50 mg', '100 mg Forte', '150 mg Duo'], 'q': '1', 'inst': 'Ściśle po jedzeniu z osłoną żołądka'},
+      {'name': 'Dexak', 'sub': 'Dexketoprofenum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['25 mg', '25 mg SL saszetki'], 'q': '1', 'inst': '30 min przed posiłkiem'},
+      {'name': 'Diclac', 'sub': 'Diclofenacum natricum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['50 mg', '75 mg Duo', '150 mg Duo'], 'q': '1', 'inst': 'W trakcie lub po posiłku, nie dzielić'},
+      {'name': 'Voltaren Acti Forte', 'sub': 'Diclofenacum kalicum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['25 mg'], 'q': '1', 'inst': 'Przed posiłkiem z wodą'},
+      {'name': 'Nimesil', 'sub': 'Nimesulidum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['100 mg saszetki'], 'q': '1', 'inst': 'Po posiłku, rozpuścić w wodzie'},
+      {'name': 'Pyralgina', 'sub': 'Metamizolum natricum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['500 mg'], 'q': '1', 'inst': 'W trakcie lub po posiłku'},
+      {'name': 'Doreta', 'sub': 'Tramadoli hydrochloridum + Paracetamolum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['37.5 mg + 325 mg', '75 mg + 650 mg'], 'q': '1', 'inst': 'Ściśle wg wskazań lekarza'},
+      {'name': 'Skudexa', 'sub': 'Tramadoli hydrochloridum + Dexketoprofenum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['75 mg + 25 mg'], 'q': '1', 'inst': 'Popić dużą ilością płynu'},
+
+      // Kardiologia i Nadciśnienie
+      {'name': 'Prestarium', 'sub': 'Perindoprilum argininum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['2.5 mg', '5 mg', '10 mg'], 'q': '1', 'inst': 'Rano na czczo przed śniadaniem'},
+      {'name': 'Co-Prestarium', 'sub': 'Perindoprilum + Amlodipinum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['5/5 mg', '10/5 mg', '10/10 mg'], 'q': '1', 'inst': 'Rano przed posiłkiem'},
+      {'name': 'Concor COR', 'sub': 'Bisoprololi fumaras', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['1.25 mg', '2.5 mg', '3.75 mg', '5 mg', '10 mg'], 'q': '1', 'inst': 'Rano podczas śniadania'},
+      {'name': 'Bibloc', 'sub': 'Bisoprololi fumaras', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['1.25 mg', '2.5 mg', '5 mg', '10 mg'], 'q': '1', 'inst': 'Rano o stałej porze'},
+      {'name': 'Nedal', 'sub': 'Nebivololum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['5 mg'], 'q': '1', 'inst': 'Rano o stałej porze'},
+      {'name': 'Nebilet', 'sub': 'Nebivololum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['5 mg'], 'q': '1', 'inst': 'Najlepiej podczas śniadania'},
+      {'name': 'Betaloc ZOK', 'sub': 'Metoprololi succinas', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['25 mg', '50 mg', '100 mg'], 'q': '1', 'inst': 'Rano, nie rozgryzać'},
+      {'name': 'Vivace', 'sub': 'Ramiprilum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['2.5 mg', '5 mg', '10 mg'], 'q': '1', 'inst': 'Rano o stałej porze'},
+      {'name': 'Tritace', 'sub': 'Ramiprilum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['2.5 mg', '5 mg', '10 mg'], 'q': '1', 'inst': 'Rano, popić wodą'},
+      {'name': 'Amlopin', 'sub': 'Amlodipinum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['5 mg', '10 mg'], 'q': '1', 'inst': 'Raz na dobę o stałej porze'},
+      {'name': 'Tertensif SR', 'sub': 'Indapamidum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['1.5 mg'], 'q': '1', 'inst': 'Rano, w całości'},
+      {'name': 'Atoris', 'sub': 'Atorvastatinum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['10 mg', '20 mg', '40 mg', '80 mg'], 'q': '1', 'inst': 'Wieczorem o stałej porze'},
+      {'name': 'Roswera', 'sub': 'Rosuvastatinum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['5 mg', '10 mg', '20 mg', '40 mg'], 'q': '1', 'inst': 'Raz na dobę o dowolnej porze'},
+      {'name': 'Acard', 'sub': 'Acidum acetylsalicylicum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['75 mg', '150 mg'], 'q': '1', 'inst': 'Po obiedzie lub po kolacji'},
+      {'name': 'Polocard', 'sub': 'Acidum acetylsalicylicum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['75 mg', '150 mg'], 'q': '1', 'inst': 'Po posiłku w całości'},
+      {'name': 'Eliquis', 'sub': 'Apixabanum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['2.5 mg', '5 mg'], 'q': '1', 'inst': 'Rano i wieczorem co 12h'},
+      {'name': 'Xarelto', 'sub': 'Rivaroxabanum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['15 mg', '20 mg'], 'q': '1', 'inst': 'W trakcie głównego posiłku'},
+
+      // Cukrzyca i Gastrologia
+      {'name': 'Glucophage', 'sub': 'Metformini hydrochloridum', 'cat': 'Cukrzyca', 'type': 'capsule', 'doses': ['500 mg', '850 mg', '1000 mg', 'XR 500 mg', 'XR 750 mg', 'XR 1000 mg'], 'q': '1', 'inst': 'W trakcie lub po posiłku'},
+      {'name': 'Metformax', 'sub': 'Metformini hydrochloridum', 'cat': 'Cukrzyca', 'type': 'capsule', 'doses': ['500 mg', '850 mg', '1000 mg', 'SR 500 mg', 'SR 1000 mg'], 'q': '1', 'inst': 'Wieczorem podczas kolacji'},
+      {'name': 'Jardiance', 'sub': 'Empagliflozinum', 'cat': 'Cukrzyca', 'type': 'capsule', 'doses': ['10 mg', '25 mg'], 'q': '1', 'inst': 'Rano z posiłkiem lub bez'},
+      {'name': 'Forxiga', 'sub': 'Dapagliflozinum', 'cat': 'Cukrzyca', 'type': 'capsule', 'doses': ['5 mg', '10 mg'], 'q': '1', 'inst': 'Raz na dobę o stałej porze'},
+      {'name': 'Polprazol', 'sub': 'Omeprazolum', 'cat': 'Gastrologia', 'type': 'capsule', 'doses': ['20 mg', '40 mg'], 'q': '1', 'inst': 'Rano na czczo, 30 min przed śniadaniem'},
+      {'name': 'Controloc', 'sub': 'Pantoprazolum', 'cat': 'Gastrologia', 'type': 'capsule', 'doses': ['20 mg', '40 mg'], 'q': '1', 'inst': 'Rano na czczo, nie rozgryzać'},
+      {'name': 'Mesopral', 'sub': 'Esomeprazolum', 'cat': 'Gastrologia', 'type': 'capsule', 'doses': ['20 mg', '40 mg'], 'q': '1', 'inst': 'Rano przed śniadaniem'},
+      {'name': 'No-Spa', 'sub': 'Drotaverini hydrochloridum', 'cat': 'Gastrologia', 'type': 'capsule', 'doses': ['40 mg', '80 mg Forte', '80 mg Max'], 'q': '1', 'inst': 'Doraźnie w skurczach'},
+      {'name': 'Duspatalin Retard', 'sub': 'Mebeverini hydrochloridum', 'cat': 'Gastrologia', 'type': 'capsule', 'doses': ['200 mg'], 'q': '1', 'inst': '20 min przed posiłkiem'},
+
+      // Układ oddechowy i Alergia
+      {'name': 'Ventolin', 'sub': 'Salbutamolum', 'cat': 'Pulmonologia', 'type': 'inhaler', 'doses': ['100 µg aerozol'], 'q': '1', 'inst': 'Wziewnie w duszności, wstrząsnąć'},
+      {'name': 'Berodual', 'sub': 'Fenoterolum + Ipratropium', 'cat': 'Pulmonologia', 'type': 'drops', 'doses': ['krople do nebulizacji'], 'q': '20', 'inst': 'Do nebulizacji z solą fizjologiczną'},
+      {'name': 'Pulmicort', 'sub': 'Budesonidum', 'cat': 'Pulmonologia', 'type': 'ml', 'doses': ['0.25 mg/ml', '0.5 mg/ml'], 'q': '2', 'inst': 'W nebulizacji, wypłukać usta wodą'},
+      {'name': 'Foster', 'sub': 'Beclometasoni dipropionas + Formoterolum', 'cat': 'Pulmonologia', 'type': 'inhaler', 'doses': ['100/6 µg', '200/6 µg'], 'q': '1', 'inst': 'Rano i wieczorem, wypłukać usta'},
+      {'name': 'Symbicort Turbuhaler', 'sub': 'Budesonidum + Formoterolum', 'cat': 'Pulmonologia', 'type': 'inhaler', 'doses': ['80/4.5 µg', '160/4.5 µg', '320/9 µg'], 'q': '1', 'inst': 'Wziewnie rano i wieczorem'},
+      {'name': 'Clatra', 'sub': 'Bilastinum', 'cat': 'Alergia', 'type': 'capsule', 'doses': ['20 mg'], 'q': '1', 'inst': 'Ściśle na czczo: 1h przed lub 2h po jedzeniu'},
+      {'name': 'Xyzal', 'sub': 'Levocetirizinum', 'cat': 'Alergia', 'type': 'capsule', 'doses': ['5 mg'], 'q': '1', 'inst': 'Raz na dobę wieczorem'},
+      {'name': 'Zyrtec', 'sub': 'Cetirizinum', 'cat': 'Alergia', 'type': 'capsule', 'doses': ['10 mg'], 'q': '1', 'inst': 'Wieczorem, popić wodą'},
+      {'name': 'Hitaxa', 'sub': 'Desloratadinum', 'cat': 'Alergia', 'type': 'capsule', 'doses': ['5 mg'], 'q': '1', 'inst': 'Rozpuścić na języku'},
+
+      // Okulistyka, Tarczyca, Neurologia
+      {'name': 'Hyabak', 'sub': 'Natrii hyaluronas 0.15%', 'cat': 'Okulistyka', 'type': 'drops', 'doses': ['krople do oczu'], 'q': '1', 'inst': 'Zakroplić do worka spojówkowego'},
+      {'name': 'Systane Ultra', 'sub': 'Krople nawilżające', 'cat': 'Okulistyka', 'type': 'drops', 'doses': ['krople do oczu'], 'q': '1', 'inst': '1-2 krople do każdego oka'},
+      {'name': 'Thealoz Duo', 'sub': 'Trehalosum + Natrii hyaluronas', 'cat': 'Okulistyka', 'type': 'drops', 'doses': ['krople bez konserwantów'], 'q': '1', 'inst': '1 kropla 4-6 razy dziennie'},
+      {'name': 'Tobradex', 'sub': 'Tobramycinum + Dexamethasonum', 'cat': 'Okulistyka', 'type': 'drops', 'doses': ['krople do oczu'], 'q': '1', 'inst': 'Wstrząsnąć, co 4-6h'},
+      {'name': 'Euthyrox N', 'sub': 'Levothyroxinum natricum', 'cat': 'Endokrynologia', 'type': 'capsule', 'doses': ['25 µg', '50 µg', '75 µg', '88 µg', '100 µg', '112 µg', '125 µg', '150 µg', '175 µg', '200 µg'], 'q': '1', 'inst': 'Rano na czczo min. 30 min przed śniadaniem, sama woda'},
+      {'name': 'Letrox', 'sub': 'Levothyroxinum natricum', 'cat': 'Endokrynologia', 'type': 'capsule', 'doses': ['50 µg', '75 µg', '100 µg', '125 µg', '150 µg'], 'q': '1', 'inst': 'Rano na czczo z małą ilością wody'},
+      {'name': 'Pregabalin', 'sub': 'Pregabalinum', 'cat': 'Neurologia', 'type': 'capsule', 'doses': ['75 mg', '150 mg', '300 mg'], 'q': '1', 'inst': 'Rano i wieczorem o stałych porach'},
+      {'name': 'Trittico CR', 'sub': 'Trazodoni hydrochloridum', 'cat': 'Psychiatria', 'type': 'capsule', 'doses': ['75 mg', '150 mg'], 'q': '1', 'inst': 'Wieczorem przed snem'},
+      {'name': 'Milurit', 'sub': 'Allopurinolum', 'cat': 'Metabolizm', 'type': 'capsule', 'doses': ['100 mg', '200 mg', '300 mg'], 'q': '1', 'inst': 'Po posiłku, pić dużo płynów'},
+      {'name': 'Magne B6 Forte', 'sub': 'Magnesium + B6', 'cat': 'Minerały', 'type': 'capsule', 'doses': ['100 mg Mg2+'], 'q': '1', 'inst': 'W trakcie posiłku, popić wodą'},
       {'name': 'Vigantoletten', 'sub': 'Cholecalciferolum (D3)', 'cat': 'Witaminy', 'type': 'capsule', 'doses': ['1000 j.m.', '2000 j.m.'], 'q': '1', 'inst': 'Podczas posiłku z tłuszczami'},
     ];
 
@@ -1519,7 +1680,7 @@ class MedicationRegistryService {
       for (final d in doses) {
         list.add(RegisteredMedicine(
           id: 'med_\${id++}',
-          name: '\${t['name']} \$d',
+          name: '\${t['name']} $d',
           substance: t['sub'] as String,
           category: t['cat'] as String,
           defaultType: t['type'] as String,
@@ -2376,6 +2537,53 @@ class _TherapiesScreenState extends State<TherapiesScreen> {
     }
   }
 
+  Future<void> _deleteMedicationFromTherapy(Medication med, String therapyName) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.delete_outline, color: Colors.redAccent, size: 24),
+            SizedBox(width: 8),
+            Text('Usunąć lek z terapii?'),
+          ],
+        ),
+        content: Text(
+          'Czy na pewno chcesz usunąć lek "\${med.name}" z terapii "$therapyName"?\\n\\n'
+          'Spowoduje to również usunięcie wszystkich zaplanowanych dla niego dawek z harmonogramu.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Anuluj'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Usuń lek'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      await DatabaseService.instance.deleteMedication(med.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Lek "\${med.name}" został usunięty.'),
+            backgroundColor: Colors.teal.shade800,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+        _loadData();
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -2514,19 +2722,51 @@ class _TherapiesScreenState extends State<TherapiesScreen> {
                               ],
                             ),
                             if (meds.isNotEmpty) ...[
-                              const SizedBox(height: 6),
-                              Wrap(
-                                spacing: 6,
-                                runSpacing: 6,
+                              const SizedBox(height: 8),
+                              Column(
                                 children: meds.map((m) {
-                                  return Chip(
-                                    visualDensity: VisualDensity.compact,
-                                    backgroundColor: Colors.teal.shade50,
-                                    side: BorderSide(color: Colors.teal.shade100),
-                                    avatar: const Icon(Icons.medication, size: 14, color: Colors.teal),
-                                    label: Text(
-                                      '\${m.name} (\${m.formatDose()})',
-                                      style: TextStyle(fontSize: 12, color: Colors.teal.shade900),
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 6),
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: BorderSide(color: Colors.grey.shade200),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.all(6),
+                                          decoration: BoxDecoration(
+                                            color: Colors.teal.shade50,
+                                            borderRadius: BorderRadius.circular(8),
+                                          ),
+                                          child: Icon(Icons.medication_outlined, size: 18, color: Colors.teal.shade700),
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                m.name,
+                                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                              ),
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                'Dawka: \${m.formatDose()} • Godziny: \${m.times.join(", ")}',
+                                                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        IconButton(
+                                          icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+                                          tooltip: 'Usuń lek z terapii',
+                                          visualDensity: VisualDensity.compact,
+                                          onPressed: () => _deleteMedicationFromTherapy(m, therapy.name),
+                                        ),
+                                      ],
                                     ),
                                   );
                                 }).toList(),
@@ -3011,8 +3251,10 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
     language: 'dart',
     description: 'Ekran bezpiecznej kopii zapasowej w chmurze z edukacją o prywatności (offline-first, drive.file, brak serwerów twórcy)',
     content: `import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import '../services/google_drive_sync_service.dart';
+import '../services/database_service.dart';
 
 class BackupSyncScreen extends StatefulWidget {
   const BackupSyncScreen({super.key});
@@ -3026,6 +3268,7 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
   bool _isLoading = false;
   String? _statusMessage;
   bool _isSuccessMessage = true;
+  bool _isDeveloperError = false;
   BackupInfo? _latestBackup;
 
   @override
@@ -3049,6 +3292,7 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
     setState(() {
       _isLoading = true;
       _statusMessage = null;
+      _isDeveloperError = false;
     });
 
     try {
@@ -3057,9 +3301,21 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
         _latestBackup = await _syncService.getLatestBackupInfo();
         _statusMessage = 'Zalogowano pomyślnie jako \${user.email}';
         _isSuccessMessage = true;
+        _isDeveloperError = false;
       }
     } catch (e) {
-      _statusMessage = 'Logowanie zostało przerwane lub wystąpił błąd: $e';
+      final errorStr = e.toString();
+      if (e is GoogleAuthException && e.code == 10) {
+        _statusMessage = e.message;
+        _isDeveloperError = true;
+      } else if (errorStr.contains('ApiException: 10') || errorStr.contains(': 10:')) {
+        _statusMessage = 'Wymagana konfiguracja SHA-1 w Google Cloud (kod 10: DEVELOPER_ERROR). '
+            'Certyfikat tej kompilacji APK nie został dodany do identyfikatora OAuth dla pakietu "com.example.medplaner".';
+        _isDeveloperError = true;
+      } else {
+        _statusMessage = 'Logowanie zostało przerwane lub wystąpił błąd: $e';
+        _isDeveloperError = false;
+      }
       _isSuccessMessage = false;
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -3155,6 +3411,161 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
     }
   }
 
+  Future<void> _handleExportLocalBackup() async {
+    setState(() => _isLoading = true);
+    try {
+      final file = await DatabaseService.instance.exportBackupFile();
+      final size = await file.length();
+      final sizeKb = (size / 1024).toStringAsFixed(1);
+      setState(() {
+        _statusMessage = 'Wyeksportowano lokalną kopię: \${file.path} ($sizeKb KB). Plik bazy został bezpiecznie zapisany.';
+        _isSuccessMessage = true;
+        _isDeveloperError = false;
+        _isLoading = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Lokalna kopia zapasowa została utworzona pomyślnie.'),
+            backgroundColor: Colors.teal,
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() {
+        _statusMessage = 'Nie udało się wyeksportować bazy: $e';
+        _isSuccessMessage = false;
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _handleRestoreLocalBackup() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Przywrócić lokalną kopię?'),
+        content: const Text(
+          'Przywrócenie lokalnego pliku "medplaner-backup.db" nadpisze bieżącą bazę danych na telefonie.\\n\\nCzy chcesz kontynuować?',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Anuluj')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Przywróć'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() => _isLoading = true);
+    try {
+      final file = await DatabaseService.instance.exportBackupFile();
+      final ok = await DatabaseService.instance.restoreFromBackupFile(file.path);
+      setState(() {
+        _statusMessage = ok
+            ? 'Baza danych została pomyślnie przywrócona z lokalnego pliku.'
+            : 'Nie znaleziono pliku kopii "medplaner-backup.db".';
+        _isSuccessMessage = ok;
+        _isLoading = false;
+      });
+      if (mounted && ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Baza danych została zsynchronizowana z lokalnego pliku.'),
+            backgroundColor: Colors.teal,
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() {
+        _statusMessage = 'Błąd przywracania bazy: $e';
+        _isSuccessMessage = false;
+        _isLoading = false;
+      });
+    }
+  }
+
+  void _showSha1HelpDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.vpn_key_outlined, color: Colors.teal),
+            SizedBox(width: 8),
+            Text('Konfiguracja SHA-1', style: TextStyle(fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Błąd "ApiException: 10" (DEVELOPER_ERROR) oznacza, że Google Play Services na Twoim telefonie '
+                'nie ma jeszcze zarejestrowanego certyfikatu SHA-1 tej kompilacji aplikacji w konsoli Google Cloud.',
+                style: TextStyle(fontSize: 13, height: 1.4),
+              ),
+              const SizedBox(height: 12),
+              const Text('Kroki do rozwiązania w 2 minuty:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              const SizedBox(height: 8),
+              const Text(
+                '1. Wejdź na konsolę Google Cloud:\\nconsole.cloud.google.com/apis/credentials\\n\\n'
+                '2. Kliknij "+ UTWÓRZ DANE LOGOWANIA" -> "Identyfikator klienta OAuth".\\n\\n'
+                '3. Wybierz typ: "Android".\\n\\n'
+                '4. Wpisz nazwę pakietu:',
+                style: TextStyle(fontSize: 12, height: 1.4),
+              ),
+              Container(
+                margin: const EdgeInsets.symmetric(vertical: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text('com.example.medplaner', style: TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.bold, fontSize: 12)),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.copy, size: 16),
+                      tooltip: 'Kopiuj nazwę pakietu',
+                      onPressed: () {
+                        Clipboard.setData(const ClipboardData(text: 'com.example.medplaner'));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Skopiowano nazwę pakietu.'), duration: Duration(seconds: 2)),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              const Text(
+                '5. W pole "Odcisk certyfikatu SHA-1" wklej odcisk z logów GitHub Actions (z sekcji "Odczytaj odciski certyfikatów SHA-1") '
+                'lub uruchom polecenie w katalogu projektu: ./gradlew signingReport.\\n\\n'
+                '6. Kliknij "Utwórz". Zmiany zaczną obowiązywać w ciągu kilku minut.\\n\\n'
+                'Wskazówka: Do tego czasu możesz natychmiast korzystać z opcji "Lokalna kopia zapasowa" poniżej!',
+                style: TextStyle(fontSize: 12, height: 1.4),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Zamknij'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final dateFormat = DateFormat('dd.MM.yyyy HH:mm', 'pl_PL');
@@ -3225,27 +3636,62 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: _isSuccessMessage ? Colors.green.shade50 : Colors.red.shade50,
+                color: _isSuccessMessage ? Colors.green.shade50 : (_isDeveloperError ? Colors.amber.shade50 : Colors.red.shade50),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: _isSuccessMessage ? Colors.green.shade300 : Colors.red.shade300),
+                border: Border.all(
+                  color: _isSuccessMessage
+                      ? Colors.green.shade300
+                      : (_isDeveloperError ? Colors.amber.shade400 : Colors.red.shade300),
+                ),
               ),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(
-                    _isSuccessMessage ? Icons.check_circle : Icons.error_outline,
-                    color: _isSuccessMessage ? Colors.green.shade800 : Colors.red.shade800,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      _statusMessage!,
-                      style: TextStyle(
-                        color: _isSuccessMessage ? Colors.green.shade900 : Colors.red.shade900,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        _isSuccessMessage
+                            ? Icons.check_circle
+                            : (_isDeveloperError ? Icons.warning_amber_rounded : Icons.error_outline),
+                        color: _isSuccessMessage
+                            ? Colors.green.shade800
+                            : (_isDeveloperError ? Colors.amber.shade900 : Colors.red.shade800),
                       ),
-                    ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          _statusMessage!,
+                          style: TextStyle(
+                            color: _isSuccessMessage
+                                ? Colors.green.shade900
+                                : (_isDeveloperError ? const Color(0xFF78350F) : Colors.red.shade900),
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
+                  if (_isDeveloperError) ...[
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.amber.shade800,
+                            foregroundColor: Colors.white,
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          icon: const Icon(Icons.help_outline, size: 16),
+                          label: const Text('Jak rozwiązać ten błąd? (Instrukcja SHA-1)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          onPressed: _showSha1HelpDialog,
+                        ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -3419,6 +3865,92 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
               ),
             ),
           ),
+
+          const SizedBox(height: 16),
+
+          // Karta: Lokalna Kopia Zapasowa (Plik .db na telefonie - działa natychmiast)
+          Card(
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(color: Colors.teal.shade200),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: Colors.teal.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(Icons.folder_zip_outlined, color: Colors.teal, size: 20),
+                      ),
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Lokalna kopia zapasowa (Bez logowania)',
+                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                            ),
+                            Text(
+                              'Zapis bezpośrednio do pliku w pamięci telefonu',
+                              style: TextStyle(color: Colors.grey, fontSize: 11),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'Możesz w każdej chwili zrzucić pełną bazę "medications_catalog.db" do pliku '
+                    '"medplaner-backup.db" w pamięci urządzenia i przywrócić ją w razie potrzeby.',
+                    style: TextStyle(fontSize: 12, height: 1.4, color: Color(0xFF475569)),
+                  ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.teal.shade800,
+                            side: BorderSide(color: Colors.teal.shade300),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          icon: const Icon(Icons.file_upload_outlined, size: 18),
+                          label: const Text('Eksportuj do pliku', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          onPressed: _isLoading ? null : _handleExportLocalBackup,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.teal.shade800,
+                            side: BorderSide(color: Colors.teal.shade300),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          icon: const Icon(Icons.file_download_outlined, size: 18),
+                          label: const Text('Przywróć z pliku', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          onPressed: _isLoading ? null : _handleRestoreLocalBackup,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
         ],
       ),
     );

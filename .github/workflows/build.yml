@@ -56,6 +56,24 @@ jobs:
       - name: Pobranie zależności Flutter (pub get)
         run: flutter pub get
 
+      - name: Odczytaj odciski certyfikatów SHA-1 i SHA-256 dla Google Sign-In
+        run: |
+          echo "================================================================================"
+          echo "ODCISKI KLUCZY CERTYFIKATÓW DLA GOOGLE CLOUD CONSOLE (OAUTH CLIENT ID ANDROID):"
+          echo "Pakiet aplikacji (Package name): com.example.medplaner"
+          echo "================================================================================"
+          if [ -d "android" ]; then
+            cd android
+            echo "--- Raport podpisów Gradle (signingReport) ---"
+            ./gradlew signingReport || true
+            cd ..
+          fi
+          if [ -f "$HOME/.android/debug.keystore" ]; then
+            echo "--- Domyślny debug.keystore SHA-1: ---"
+            keytool -list -v -keystore "$HOME/.android/debug.keystore" -alias androiddebugkey -storepass android -keypass android | grep -E "SHA1:|SHA256:" || true
+          fi
+          echo "================================================================================"
+
       - name: Budowanie pliku APK Release
         run: flutter build apk --release
 

@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
+import 'package:path_provider/path_provider.dart';
 import '../models/therapy.dart';
 import '../models/medication.dart';
 import '../models/dose_log.dart';
@@ -33,6 +34,29 @@ class DatabaseService {
   Future<void> reloadDatabase() async {
     await closeDatabase();
     _database = await _initDatabase();
+  }
+
+  /// Eksport lokalnej kopii zapasowej do pliku medplaner-backup.db w katalogu dokumentów
+  Future<File> exportBackupFile() async {
+    final dbPath = await getDatabaseFilePath();
+    final dbFile = File(dbPath);
+    if (!await dbFile.exists()) {
+      await database; // Utworzenie bazy jeśli jeszcze nie powstała
+    }
+    final dir = await getApplicationDocumentsDirectory();
+    final backupFile = File(join(dir.path, 'medplaner-backup.db'));
+    return await dbFile.copy(backupFile.path);
+  }
+
+  /// Przywrócenie bazy z pliku kopii zapasowej
+  Future<bool> restoreFromBackupFile(String filePath) async {
+    final backupFile = File(filePath);
+    if (!await backupFile.exists()) return false;
+    final dbPath = await getDatabaseFilePath();
+    await closeDatabase();
+    await backupFile.copy(dbPath);
+    await reloadDatabase();
+    return true;
   }
 
   Future<Database> _initDatabase() async {
