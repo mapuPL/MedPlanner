@@ -13,6 +13,7 @@ void main() async {
 
   await DatabaseService.instance.database;
   await NotificationService.instance.initialize();
+  await NotificationService.instance.rescheduleAllUpcomingDoses();
 
   runApp(const MedPlanerApp());
 }

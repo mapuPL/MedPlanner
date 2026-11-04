@@ -5,6 +5,8 @@ class RegisteredMedicine {
   final String category;
   final String defaultType; // 'capsule', 'drops', 'ml', 'inhaler', 'application', 'other'
   final String defaultDose;
+  final String? dosageUnit;
+  final String? defaultFrequency;
   final String instructions;
   final bool isCustom;
 
@@ -15,6 +17,8 @@ class RegisteredMedicine {
     required this.category,
     required this.defaultType,
     required this.defaultDose,
+    this.dosageUnit,
+    this.defaultFrequency,
     required this.instructions,
     this.isCustom = false,
   });
@@ -27,6 +31,8 @@ class RegisteredMedicine {
       'category': category,
       'default_type': defaultType,
       'default_dose': defaultDose,
+      'dosage_unit': dosageUnit,
+      'default_frequency': defaultFrequency,
       'instructions': instructions,
       'is_custom': isCustom ? 1 : 0,
     };
@@ -40,11 +46,14 @@ class RegisteredMedicine {
       category: map['category'] as String,
       defaultType: map['default_type'] as String,
       defaultDose: map['default_dose'] as String,
+      dosageUnit: map['dosage_unit'] as String?,
+      defaultFrequency: map['default_frequency'] as String?,
       instructions: map['instructions'] as String,
       isCustom: (map['is_custom'] as int?) == 1,
     );
   }
 }
+
 
 class MedicationRegistryService {
   static final MedicationRegistryService instance = MedicationRegistryService._internal();
@@ -217,4 +226,29 @@ class MedicationRegistryService {
 
     return results;
   }
+
+  static const List<String> standardDosageUnits = [
+    'tabl. powlekana',
+    'kapsułka',
+    'krople',
+    'ml (syrop)',
+    'dawka wziewna',
+    'saszetka',
+    'aplikacja (maść/krem)',
+    'ampułka / zastrzyk',
+    'czopek',
+    'plaster',
+  ];
+
+  static const List<Map<String, dynamic>> standardFrequencies = [
+    {'id': '1x_rano', 'label': '1x na dobę (rano)', 'times': ['08:00']},
+    {'id': '1x_wieczor', 'label': '1x na dobę (wieczorem)', 'times': ['20:00']},
+    {'id': '1x_noc', 'label': '1x na dobę (przed snem)', 'times': ['22:00']},
+    {'id': '1x_czczo', 'label': '1x na dobę (rano na czczo)', 'times': ['07:00']},
+    {'id': '2x_12h', 'label': '2x na dobę (co 12h)', 'times': ['08:00', '20:00']},
+    {'id': '3x_8h', 'label': '3x na dobę (co 8h)', 'times': ['08:00', '14:00', '20:00']},
+    {'id': '4x_6h', 'label': '4x na dobę (co 6h)', 'times': ['06:00', '12:00', '18:00', '23:00']},
+    {'id': 'doraznie', 'label': 'Doraźnie w razie bólu / objawów', 'times': ['08:00', '16:00']},
+  ];
 }
+

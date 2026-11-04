@@ -135,4 +135,97 @@ class NotificationService {
       payload: doseId,
     );
   }
+
+  /// Anuluje pojedyncze zaplanowane powiadomienie dla podanej dawki
+  Future<void> cancelNotificationForDose(String doseId) async {
+    try {
+      await _notificationsPlugin.cancel(doseId.hashCode.abs());
+    } catch (_) {}
+  }
+
+  /// Przelicza i planuje dokładne alarmy w tle dla wszystkich nadchodzących dawek
+  /// Działa w trybie exactAllowWhileIdle, dzięki czemu budzi urządzenie nawet w trybie uśpienia (Doze mode)
+  Future<void> rescheduleAllUpcomingDoses() async {
+    try {
+      await _notificationsPlugin.cancelAll();
+      final now = DateTime.now();
+
+      // Przelicz powiadomienia na dzisiaj oraz kolejne 3 dni w przód
+      for (int i = 0; i < 4; i++) {
+        final targetDate = now.add(Duration(days: i));
+        final doses = await DatabaseService.instance.getDosesForDate(targetDate);
+
+        for (final dose in doses) {
+          if (dose.status == 'taken' || dose.status == 'skipped') continue;
+
+          DateTime scheduledAt;
+          if (dose.status == 'snoozed' && dose.snoozedUntil != null) {
+            final parts = dose.snoozedUntil!.split(':');
+            if (parts.length >= 2) {
+              scheduledAt = DateTime(
+                targetDate.year,
+                targetDate.month,
+                targetDate.day,
+                int.tryParse(parts[0]) ?? 8,
+                int.tryParse(parts[1]) ?? 0,
+              );
+            } else {
+              continue;
+            }
+          } else {
+            final parts = dose.scheduledTime.split(':');
+            scheduledAt = DateTime(
+              targetDate.year,
+              targetDate.month,
+              targetDate.day,
+              int.tryParse(parts[0]) ?? 8,
+              int.tryParse(parts[1]) ?? 0,
+            );
+          }
+
+          if (scheduledAt.isAfter(now)) {
+            final notifId = dose.id.hashCode.abs();
+            await scheduleExactDoseNotification(
+              notificationId: notifId,
+              doseId: dose.id,
+              medicationName: dose.medicationName ?? 'Lek',
+              doseAmount: dose.doseAmount ?? '1 dawka',
+              therapyName: dose.therapyName ?? 'Terapia',
+              scheduledDateTime: scheduledAt,
+            );
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  /// Natychmiastowy test działania w tle – za x sekund (np. 5s)
+  /// Pozwala użytkownikowi zablokować telefon lub wyjść na pulpit i sprawdzić czy powiadomienie wyskoczy
+  Future<void> scheduleTestBackgroundNotification({int secondsDelay = 5}) async {
+    final tz.TZDateTime tzTime = tz.TZDateTime.now(tz.local).add(Duration(seconds: secondsDelay));
+    const androidDetails = AndroidNotificationDetails(
+      channelId,
+      channelName,
+      channelDescription: channelDesc,
+      importance: Importance.max,
+      priority: Priority.high,
+      fullScreenIntent: true,
+      category: AndroidNotificationCategory.alarm,
+      actions: <AndroidNotificationAction>[
+        AndroidNotificationAction(actionTake, 'Wziąłem', showsUserInterface: false, cancelNotification: true),
+        AndroidNotificationAction(actionSnooze15, 'Odłóż (15 min)', showsUserInterface: false, cancelNotification: true),
+      ],
+    );
+
+    await _notificationsPlugin.zonedSchedule(
+      999999,
+      '🔔 Test powiadomienia w tle MedPlaner',
+      'Powiadomienie z górnego paska działa poprawnie nawet przy wyłączonej aplikacji!',
+      tzTime,
+      const NotificationDetails(android: androidDetails),
+      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+      uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+    );
+  }
 }
+

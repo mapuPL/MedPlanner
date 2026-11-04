@@ -21,7 +21,12 @@ import {
   Search,
   X,
   Cloud,
-  Trash2
+  Trash2,
+  Database,
+  Lock,
+  Unlock,
+  HelpCircle,
+  Volume2
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { normalizePolishText } from '../data/polishMedicationsRegistry';
@@ -40,6 +45,7 @@ import { AddMedicationModal } from './AddMedicationModal';
 import { AddTherapyModal } from './AddTherapyModal';
 import { NotificationBanner } from './NotificationBanner';
 import { BackupSyncView } from './BackupSyncView';
+import { DrugDatabaseOverlay } from './DrugDatabaseOverlay';
 
 interface PhoneSimulatorProps {
   therapies: Therapy[];
@@ -73,7 +79,14 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
   // Modals state
   const [isAddMedOpen, setIsAddMedOpen] = useState(false);
   const [isAddTherapyOpen, setIsAddTherapyOpen] = useState(false);
+  const [isDrugDatabaseOpen, setIsDrugDatabaseOpen] = useState(false);
+  const [isBgDiagnosisOpen, setIsBgDiagnosisOpen] = useState(false);
   const [snoozeDoseTarget, setSnoozeDoseTarget] = useState<DoseItem | null>(null);
+
+  // Background / Locked Phone Simulation
+  const [isPhoneLocked, setIsPhoneLocked] = useState(false);
+  const [bgCountdown, setBgCountdown] = useState<number | null>(null);
+  const [webNotificationAllowed, setWebNotificationAllowed] = useState(false);
 
   // Simulated notification banner
   const [incomingNotificationDose, setIncomingNotificationDose] = useState<DoseItem | null>(null);
@@ -100,6 +113,48 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
 
   const compliance = calculateCompliance(todayDoses);
 
+  // Dźwięk alarmu przy powiadomieniu (Web Audio API)
+  const playGentleChime = () => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+      osc.frequency.setValueAtTime(880, ctx.currentTime + 0.15); // A5
+      gain.gain.setValueAtTime(0.25, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.85);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.85);
+    } catch (_) {}
+  };
+
+  // Prawdziwe powiadomienie systemowe przeglądarki (Web Notifications API)
+  const triggerNativeDesktopNotification = (dose: DoseItem) => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      if (Notification.permission === 'granted') {
+        new Notification(`💊 Czas na lek: ${dose.medicationName}`, {
+          body: `Dawka: ${formatDoseDisplay(dose.doseAmount, dose.type)} (${dose.therapyName})`,
+          icon: '/favicon.ico',
+        });
+      } else if (Notification.permission !== 'denied') {
+        Notification.requestPermission().then((perm) => {
+          if (perm === 'granted') {
+            setWebNotificationAllowed(true);
+            new Notification(`💊 Czas na lek: ${dose.medicationName}`, {
+              body: `Dawka: ${formatDoseDisplay(dose.doseAmount, dose.type)} (${dose.therapyName})`,
+            });
+          }
+        });
+      }
+    }
+  };
+
+
   const handleTakeDoseWithFeedback = (doseId: string) => {
     onTakeDose(doseId);
     
@@ -119,39 +174,90 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
     // Pick the first pending or snoozed dose, or the first dose
     const target = todayDoses.find((d) => d.status === 'pending' || d.status === 'snoozed') || todayDoses[0];
     if (target) {
+      playGentleChime();
       setIncomingNotificationDose(target);
+      triggerNativeDesktopNotification(target);
     }
+  };
+
+  // Symulacja działania w tle – zablokowanie telefonu i test po 5 sekundach
+  const handleStartBackgroundTest = () => {
+    setIsPhoneLocked(true);
+    setBgCountdown(5);
+    const target = todayDoses.find((d) => d.status === 'pending' || d.status === 'snoozed') || todayDoses[0];
+
+    let remaining = 5;
+    const interval = setInterval(() => {
+      remaining -= 1;
+      if (remaining > 0) {
+        setBgCountdown(remaining);
+      } else {
+        clearInterval(interval);
+        setBgCountdown(null);
+        playGentleChime();
+        if (target) {
+          setIncomingNotificationDose(target);
+          triggerNativeDesktopNotification(target);
+        }
+      }
+    }, 1000);
   };
 
   return (
     <div className="flex flex-col items-center justify-center p-2 sm:p-6 w-full">
       {/* Simulation Controls Bar */}
-      <div className="w-full max-w-sm mb-3 flex items-center justify-between gap-2 px-1">
-        <div className="flex items-center gap-1.5 text-xs text-slate-600 font-medium">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-          <span>Symulator Android (Offline SQLite)</span>
+      <div className="w-full max-w-sm mb-3 flex flex-col gap-2 px-1">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5 text-xs text-slate-700 font-semibold">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+            <span>Symulator Android (Offline SQLite)</span>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setIsBgDiagnosisOpen(true)}
+              className="p-1.5 text-slate-500 hover:text-teal-700 hover:bg-slate-100 rounded-lg transition-colors flex items-center gap-1 text-2xs font-semibold"
+              title="Dlaczego powiadomienia w tle nie działały i jak to naprawiono?"
+            >
+              <HelpCircle className="w-4 h-4 text-teal-600" />
+              <span className="hidden xs:inline">Działanie w tle</span>
+            </button>
+            <button
+              type="button"
+              onClick={onResetSampleData}
+              className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors"
+              title="Zresetuj przykładowe dane"
+              aria-label="Zresetuj przykładowe dane"
+            >
+              <RotateCcw className="w-4 h-4" />
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+
+        {/* Pasek przycisków testowych powiadomień */}
+        <div className="grid grid-cols-2 gap-1.5">
+          <button
+            type="button"
+            onClick={handleStartBackgroundTest}
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-2xs font-bold transition-all shadow-xs active:scale-95"
+            title="Symuluj zamkniętą aplikację – telefon zablokuje się i wyśle alarm za 5s"
+          >
+            <Lock className="w-3.5 h-3.5" />
+            {bgCountdown !== null ? `Budzenie za ${bgCountdown}s...` : 'Test w tle (zamknięta apka)'}
+          </button>
           <button
             type="button"
             onClick={handleTriggerSimulatedAlarm}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-bold transition-all shadow-xs active:scale-95"
-            title="Wyślij testowe powiadomienie alarmowe"
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-2xs font-bold transition-all shadow-xs active:scale-95"
+            title="Wyślij testowe powiadomienie alarmowe natychmiast"
           >
             <BellRing className="w-3.5 h-3.5" />
-            Symuluj Alarm
-          </button>
-          <button
-            type="button"
-            onClick={onResetSampleData}
-            className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors"
-            title="Zresetuj przykładowe dane"
-            aria-label="Zresetuj przykładowe dane"
-          >
-            <RotateCcw className="w-4 h-4" />
+            Alarm teraz
           </button>
         </div>
       </div>
+
 
       {/* Realistic Mobile Frame */}
       <div className="relative w-full max-w-sm rounded-[42px] bg-slate-900 p-3 shadow-2xl ring-1 ring-slate-800/80 overflow-hidden">
@@ -173,6 +279,68 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
             </div>
           </div>
 
+          {/* Realistic Android Lock Screen / Simulated Closed App in Background */}
+          {isPhoneLocked && (
+            <div className="absolute inset-0 z-30 bg-linear-to-b from-slate-950 via-teal-950 to-slate-900 text-white flex flex-col justify-between p-6 animate-in fade-in duration-300">
+              {/* Lock screen top icons */}
+              <div className="flex items-center justify-between text-xs text-slate-300 pt-3">
+                <div className="flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5 text-teal-400" />
+                  <span className="text-2xs font-semibold">Ekran zablokowany (Aplikacja w tle)</span>
+                </div>
+                <span className="text-2xs font-bold">100% 🔋</span>
+              </div>
+
+              {/* Big Clock & Date */}
+              <div className="text-center my-auto space-y-2">
+                <div className="text-5xl font-light tracking-tight text-white drop-shadow-md">
+                  {new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}
+                </div>
+                <div className="text-xs text-teal-200 font-medium capitalize">
+                  {new Date().toLocaleDateString('pl-PL', { weekday: 'long', day: 'numeric', month: 'long' })}
+                </div>
+
+                {bgCountdown !== null ? (
+                  <div className="mt-6 mx-auto max-w-[250px] p-4 rounded-3xl bg-teal-900/60 border-2 border-teal-400/40 backdrop-blur-md space-y-1.5 shadow-xl animate-pulse">
+                    <div className="flex items-center justify-center gap-2 text-xs font-bold text-teal-300">
+                      <Clock className="w-4 h-4 text-teal-400" />
+                      Budzenie procesora w tle
+                    </div>
+                    <div className="text-3xl font-black text-white">
+                      {bgCountdown} s
+                    </div>
+                    <p className="text-3xs text-teal-200/90 leading-tight">
+                      Symulacja zamkniętej aplikacji. System Android obudzi się dzięki exactAllowWhileIdle.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mt-4 p-3 rounded-2xl bg-slate-900/70 border border-slate-700/60 text-2xs text-slate-300 max-w-[240px] mx-auto space-y-1">
+                    <div className="font-bold text-teal-300 flex items-center justify-center gap-1">
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      Gotowy do odbioru alarmu
+                    </div>
+                    <p className="text-3xs text-slate-400">
+                      Powiadomienie z górnego paska pojawi się na tym ekranie w wyznaczonej minucie.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Bottom Unlock Button */}
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => setIsPhoneLocked(false)}
+                  className="w-full py-2.5 px-4 bg-white/10 hover:bg-white/20 border border-white/20 rounded-2xl text-xs font-bold text-white flex items-center justify-center gap-2 transition-all active:scale-98 backdrop-blur-xs"
+                >
+                  <Unlock className="w-4 h-4 text-teal-300" />
+                  Odblokuj / Otwórz MedPlaner
+                </button>
+              </div>
+            </div>
+          )}
+
+
           {/* App Header */}
           <div className="bg-white px-5 py-3 border-b border-slate-100 flex items-center justify-between shrink-0 shadow-2xs">
             <div className="flex items-center gap-2.5">
@@ -186,6 +354,15 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
             </div>
 
             <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setIsDrugDatabaseOpen(true)}
+                className="p-1.5 text-teal-700 hover:bg-teal-50 rounded-lg transition-colors text-xs font-semibold flex items-center gap-1"
+                title="Baza leków (ponad 2700 leków z dawkami i częstotliwością)"
+              >
+                <Database className="w-4 h-4 text-teal-600" />
+                <span className="text-2xs font-bold text-teal-800">Baza</span>
+              </button>
               <button
                 type="button"
                 onClick={() => setActiveTab('sync')}
@@ -219,6 +396,7 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
               </button>
             </div>
           </div>
+
 
           {/* Screen Content Body */}
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -278,6 +456,30 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                     </button>
                   )}
                 </div>
+
+                {/* Szybki link do oficjalnej bazy leków URPL / NFZ */}
+                <button
+                  type="button"
+                  onClick={() => setIsDrugDatabaseOpen(true)}
+                  className="w-full p-2.5 rounded-2xl bg-linear-to-r from-teal-50 via-emerald-50 to-teal-50 border border-teal-200 hover:border-teal-400 text-teal-900 flex items-center justify-between text-2xs font-bold transition-all shadow-2xs group text-left"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-7 h-7 rounded-xl bg-teal-700 text-white flex items-center justify-center shrink-0 shadow-xs">
+                      <Database className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="text-slate-900 font-extrabold flex items-center gap-1.5">
+                        <span>Baza Leków URPL / NFZ</span>
+                        <span className="text-3xs px-1.5 py-0.2 bg-teal-200/80 text-teal-900 rounded font-bold">2700+ leków</span>
+                      </div>
+                      <div className="text-3xs text-slate-500 font-medium">
+                        Szukaj leku, wybierz jednostkę dawki i dodaj do terapii
+                      </div>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-teal-700 group-hover:translate-x-0.5 transition-transform shrink-0" />
+                </button>
+
 
                 {/* Status Quick Filter Chips */}
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-2xs">
@@ -743,6 +945,118 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
           setIsAddTherapyOpen(true);
         }}
       />
+
+      {/* Drug Database Overlay - Przeszukiwanie bazy ponad 2700 leków w Polsce z dawkami i częstotliwością */}
+      <DrugDatabaseOverlay
+        isOpen={isDrugDatabaseOpen}
+        therapies={therapies}
+        onClose={() => setIsDrugDatabaseOpen(false)}
+        onAddMedicationToTherapy={onAddMedication}
+        onOpenAddTherapy={() => {
+          setIsDrugDatabaseOpen(false);
+          setIsAddTherapyOpen(true);
+        }}
+      />
+
+      {/* Background Notification Diagnosis & Settings Modal */}
+      {isBgDiagnosisOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-teal-100 text-teal-800 flex items-center justify-center">
+                  <ShieldCheck className="w-5 h-5 text-teal-700" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900 leading-tight">
+                    Działanie powiadomień w tle
+                  </h3>
+                  <p className="text-2xs text-slate-500 font-medium">
+                    Dlaczego powiadomienia mogły nie dzwonić przy wyłączonej aplikacji?
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsBgDiagnosisOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs text-slate-600 leading-relaxed max-h-[60vh] overflow-y-auto pr-1">
+              <div className="p-3 bg-teal-50 border border-teal-200 rounded-2xl text-teal-950 space-y-1">
+                <div className="font-bold flex items-center gap-1.5 text-teal-800">
+                  <CheckCircle2 className="w-4 h-4 text-teal-600" />
+                  Naprawa w kodzie Flutter (rescheduleAllUpcomingDoses)
+                </div>
+                <p className="text-2xs">
+                  Wcześniej aplikacja definiowała kanał powiadomień, ale nie wywoływała planowania dokładnych alarmów przy zapisywaniu leków do bazy SQLite. Teraz każda zmiana harmonogramu automatycznie przelicza i rejestruje alarmy w systemie Android.
+                </p>
+              </div>
+
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-2xl text-amber-950 space-y-1.5">
+                <div className="font-bold flex items-center gap-1.5 text-amber-800">
+                  <AlertCircle className="w-4 h-4 text-amber-600" />
+                  Kluczowe ustawienia systemu Android (Doze Mode):
+                </div>
+                <ul className="text-2xs space-y-1.5 pl-2 list-disc list-inside">
+                  <li>
+                    <span className="font-bold">Dokładne alarmy:</span> W Android 12, 13, 14 i nowszych aplikacja musi mieć przyznane uprawnienie "Alarmy i przypomnienia".
+                  </li>
+                  <li>
+                    <span className="font-bold">Samsung (OneUI):</span> Wejdź w Ustawienia &gt; Aplikacje &gt; MedPlaner &gt; Bateria &gt; Zmień z "Zoptymalizowano" na <strong>"Nieograniczone" (Unrestricted)</strong>.
+                  </li>
+                  <li>
+                    <span className="font-bold">Xiaomi / POCO (MIUI / HyperOS):</span> Włącz <strong>"Autostart"</strong> oraz ustaw Oszczędzanie baterii na <strong>"Bez ograniczeń"</strong>.
+                  </li>
+                  <li>
+                    <span className="font-bold">Huawei (EMUI):</span> Uruchamianie aplikacji &gt; Wyłącz automatyczne, zaznacz <strong>"Działanie w tle"</strong>.
+                  </li>
+                </ul>
+              </div>
+
+              <div className="p-3 bg-slate-100 rounded-2xl space-y-1">
+                <div className="font-bold text-slate-800">Test powiadomień w przeglądarce (Web Push):</div>
+                <p className="text-2xs text-slate-500">
+                  Możesz przetestować natywne powiadomienie z paska systemu klikając przycisk poniżej.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (typeof window !== 'undefined' && 'Notification' in window) {
+                      Notification.requestPermission().then((res) => {
+                        if (res === 'granted') {
+                          setWebNotificationAllowed(true);
+                          new Notification('🔔 MedPlaner: Powiadomienia włączone', {
+                            body: 'Alarmy będą pojawiać się w pasku systemowym urządzenia.',
+                          });
+                        }
+                      });
+                    }
+                  }}
+                  className="mt-2 w-full py-1.5 px-3 bg-white hover:bg-slate-200 border border-slate-300 rounded-xl text-2xs font-bold text-slate-800 flex items-center justify-center gap-1.5 shadow-2xs"
+                >
+                  <Volume2 className="w-3.5 h-3.5 text-teal-600" />
+                  Włącz powiadomienia w przeglądarce
+                </button>
+              </div>
+            </div>
+
+            <div className="pt-2 flex justify-end gap-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setIsBgDiagnosisOpen(false)}
+                className="px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white font-bold rounded-xl text-xs transition-colors"
+              >
+                Rozumiem
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/dose_log.dart';
 import '../services/database_service.dart';
+import '../services/notification_service.dart';
 import '../widgets/snooze_bottom_sheet.dart';
 import 'add_medication_screen.dart';
 import 'backup_sync_screen.dart';
@@ -70,6 +71,11 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('MedPlaner - Dzisiaj', style: TextStyle(fontWeight: FontWeight.bold)),
         actions: [
           IconButton(
+            icon: const Icon(Icons.notifications_active_outlined, color: Colors.teal),
+            tooltip: 'Powiadomienia w tle (gdy apka zamknięta)',
+            onPressed: () => _showBackgroundNotificationDialog(context),
+          ),
+          IconButton(
             icon: const Icon(Icons.cloud_sync_outlined, color: Colors.teal),
             tooltip: 'Kopia zapasowa na Dysku Google',
             onPressed: () => Navigator.push(
@@ -78,6 +84,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         ],
+
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -447,4 +454,83 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+
+  void _showBackgroundNotificationDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.alarm_on, color: Colors.teal),
+            SizedBox(width: 8),
+            Text('Powiadomienia w tle', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Aplikacja MedPlaner wysyła dokładne alarmy z poziomu systemu Android nawet wtedy, gdy aplikacja jest całkowicie ZAMKNIĘTA lub ekran jest wygaszony.',
+                style: TextStyle(fontSize: 13, height: 1.4),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.amber.shade50,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.amber.shade300),
+                ),
+                child: const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Wymagane ustawienia Androida:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.brown)),
+                    SizedBox(height: 4),
+                    Text('1. Bateria -> "Bez ograniczeń" (Unrestricted) zamiast "Zoptymalizowane".', style: TextStyle(fontSize: 11)),
+                    Text('2. Uprawnienie "Alarmy i przypomnienia" włączone w ustawieniach aplikacji.', style: TextStyle(fontSize: 11)),
+                    Text('3. Dla Xiaomi / Huawei: Włącz "Autostart".', style: TextStyle(fontSize: 11)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'Możesz przetestować powiadomienie za 5 sekund. Kliknij przycisk poniżej, wyjdź na pulpit lub zablokuj ekran!',
+                style: TextStyle(fontSize: 12, color: Colors.black87),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Zamknij'),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.teal.shade800,
+              foregroundColor: Colors.white,
+            ),
+            icon: const Icon(Icons.timer, size: 16),
+            label: const Text('Test za 5 sek (zablokuj ekran)'),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await NotificationService.instance.scheduleTestBackgroundNotification(secondsDelay: 5);
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Zaplanowano test za 5 sekund! Możesz zablokować telefon.'),
+                    backgroundColor: Colors.teal,
+                    duration: Duration(seconds: 4),
+                  ),
+                );
+              }
+            },
+          ),
+        ],
+      ),
+    );
+  }
 }
+

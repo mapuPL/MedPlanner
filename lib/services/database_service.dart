@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import '../models/therapy.dart';
 import '../models/medication.dart';
 import '../models/dose_log.dart';
+import 'notification_service.dart';
 
 class DatabaseService {
   static final DatabaseService instance = DatabaseService._internal();
@@ -56,6 +57,7 @@ class DatabaseService {
     await closeDatabase();
     await backupFile.copy(dbPath);
     await reloadDatabase();
+    await NotificationService.instance.rescheduleAllUpcomingDoses();
     return true;
   }
 
@@ -148,6 +150,7 @@ class DatabaseService {
     await db.delete('therapies', where: 'id = ?', whereArgs: [id]);
     await db.delete('medications', where: 'therapy_id = ?', whereArgs: [id]);
     await db.delete('dose_logs', where: 'therapy_id = ?', whereArgs: [id]);
+    await NotificationService.instance.rescheduleAllUpcomingDoses();
   }
 
   Future<List<Therapy>> getTherapies({bool activeOnly = false}) async {
@@ -160,13 +163,16 @@ class DatabaseService {
   Future<void> insertMedication(Medication medication) async {
     final db = await database;
     await db.insert('medications', medication.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
+    await NotificationService.instance.rescheduleAllUpcomingDoses();
   }
 
   Future<void> deleteMedication(String id) async {
     final db = await database;
     await db.delete('medications', where: 'id = ?', whereArgs: [id]);
     await db.delete('dose_logs', where: 'medication_id = ?', whereArgs: [id]);
+    await NotificationService.instance.rescheduleAllUpcomingDoses();
   }
+
 
   Future<List<Medication>> getMedicationsForTherapy(String therapyId) async {
     final db = await database;
@@ -267,6 +273,7 @@ class DatabaseService {
       where: 'id = ?',
       whereArgs: [doseId],
     );
+    await NotificationService.instance.cancelNotificationForDose(doseId);
   }
 
   Future<void> snoozeDose(String doseId, int minutes) async {
@@ -279,5 +286,12 @@ class DatabaseService {
       SET status = ?, snoozed_until = ?, snooze_count = snooze_count + 1 
       WHERE id = ?
     ''', [DoseStatus.snoozed.name, snoozedTimeString, doseId]);
+    await NotificationService.instance.scheduleSnoozeNotification(
+      doseId: doseId,
+      title: '⏰ Odroczone przypomnienie o leku',
+      body: 'Czas zażyć dawkę!',
+      minutes: minutes,
+    );
   }
 }
+
