@@ -18,6 +18,8 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
   final _nameController = TextEditingController();
   final _doseAmountController = TextEditingController(text: '1');
   final _instructionsController = TextEditingController();
+  final _packageSizeController = TextEditingController(text: '30');
+  DateTime? _expiryDate;
 
   List<Therapy> _therapies = [];
   String? _selectedTherapyId;
@@ -48,6 +50,7 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
     _nameController.dispose();
     _doseAmountController.dispose();
     _instructionsController.dispose();
+    _packageSizeController.dispose();
     super.dispose();
   }
 
@@ -144,6 +147,8 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
       return '$h:$m';
     }).toList();
 
+    final parsedPkg = double.tryParse(_packageSizeController.text.replaceAll(',', '.'));
+
     final med = Medication(
       id: const Uuid().v4(),
       therapyId: _selectedTherapyId!,
@@ -155,6 +160,10 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
       scheduleType: _selectedSchedule,
       selectedDays: _selectedDays,
       startDate: DateTime.now(),
+      packageSize: parsedPkg,
+      stockQuantity: parsedPkg,
+      lowStockThreshold: parsedPkg != null ? (parsedPkg * 0.15).clamp(3, 15) : 5,
+      expiryDate: _expiryDate,
     );
 
     await DatabaseService.instance.insertMedication(med);
@@ -397,6 +406,47 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
                 border: OutlineInputBorder(),
                 prefixIcon: Icon(Icons.info_outline),
               ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _packageSizeController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(
+                      labelText: 'Stan opakowania (${_selectedType.shortUnit})',
+                      border: const OutlineInputBorder(),
+                      prefixIcon: const Icon(Icons.inventory_2_outlined),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    icon: const Icon(Icons.event_outlined, size: 18),
+                    label: Text(
+                      _expiryDate != null
+                          ? '${_expiryDate!.day.toString().padLeft(2, '0')}.${_expiryDate!.month.toString().padLeft(2, '0')}.${_expiryDate!.year}'
+                          : 'Ważność (opcj.)',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    onPressed: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: _expiryDate ?? DateTime.now().add(const Duration(days: 180)),
+                        firstDate: DateTime(2020),
+                        lastDate: DateTime(2035),
+                      );
+                      if (picked != null) setState(() => _expiryDate = picked);
+                    },
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 24),
             Row(

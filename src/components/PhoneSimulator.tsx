@@ -1,18 +1,16 @@
-import React, { useState } from 'react';
-import { 
-  Check, 
-  Clock, 
-  Plus, 
-  Calendar, 
-  History, 
-  Layers, 
-  BellRing, 
-  Sparkles, 
-  Pill, 
-  ChevronRight, 
+import React, { useState, useMemo } from 'react';
+import {
+  Check,
+  Clock,
+  Plus,
+  Calendar,
+  Layers,
+  BellRing,
+  Sparkles,
+  Pill,
+  ChevronRight,
   AlertCircle,
   CheckCircle2,
-  Filter,
   ShieldCheck,
   RotateCcw,
   Sun,
@@ -26,37 +24,49 @@ import {
   Lock,
   Unlock,
   HelpCircle,
-  Volume2
+  Volume2,
+  Package,
+  AlertTriangle,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { normalizePolishText } from '../data/polishMedicationsRegistry';
-import { 
-  Therapy, 
-  Medication, 
-  DoseItem, 
-  DoseStatus,
+import {
+  Therapy,
+  Medication,
+  DoseItem,
+  FamilyProfile,
   calculateCompliance,
   sortDosesChronologically,
-  formatDoseDisplay
+  formatDoseDisplay,
+  isMedicationActiveOnDate,
+  evaluateCabinetStatus,
+  MEDICATION_TYPE_LABELS,
 } from '../utils/medicationLogic';
 import { CalendarView } from './CalendarView';
 import { SnoozeModal } from './SnoozeModal';
 import { AddMedicationModal } from './AddMedicationModal';
 import { AddTherapyModal } from './AddTherapyModal';
 import { NotificationBanner } from './NotificationBanner';
-import { BackupSyncView } from './BackupSyncView';
+import { BackupSyncView, MedPlanerBackupPayload } from './BackupSyncView';
 import { DrugDatabaseOverlay } from './DrugDatabaseOverlay';
+import { MedicineCabinetView } from './MedicineCabinetView';
 
 interface PhoneSimulatorProps {
   therapies: Therapy[];
   medications: Medication[];
   doses: DoseItem[];
-  onTakeDose: (doseId: string) => void;
-  onSnoozeDose: (doseId: string, minutes: number) => void;
-  onSkipDose: (doseId: string) => void;
+  profiles: FamilyProfile[];
+  activeProfileId: string;
+  onSelectProfile: (profileId: string) => void;
+  onTakeDose: (doseId: string, virtualDose?: DoseItem) => void;
+  onSnoozeDose: (doseId: string, minutes: number, virtualDose?: DoseItem) => void;
+  onSkipDose: (doseId: string, virtualDose?: DoseItem) => void;
   onAddTherapy: (therapy: Omit<Therapy, 'id' | 'createdAt'>) => void;
   onAddMedication: (medication: Omit<Medication, 'id'>) => void;
   onDeleteMedication?: (medicationId: string) => void;
+  onRefillMedication: (medicationId: string) => void;
+  onUpdateStockAndExpiry: (medicationId: string, stockQuantity: number, expiryDate?: string) => void;
+  onImportBackupData: (payload: MedPlanerBackupPayload) => void;
   onResetSampleData: () => void;
 }
 
@@ -64,18 +74,24 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
   therapies,
   medications,
   doses,
+  profiles,
+  activeProfileId,
+  onSelectProfile,
   onTakeDose,
   onSnoozeDose,
   onSkipDose,
   onAddTherapy,
   onAddMedication,
   onDeleteMedication,
+  onRefillMedication,
+  onUpdateStockAndExpiry,
+  onImportBackupData,
   onResetSampleData,
 }) => {
-  const [activeTab, setActiveTab] = useState<'today' | 'calendar' | 'therapies' | 'sync'>('today');
+  const [activeTab, setActiveTab] = useState<'today' | 'calendar' | 'cabinet' | 'therapies' | 'sync'>('today');
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'taken' | 'snoozed'>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  
+
   // Modals state
   const [isAddMedOpen, setIsAddMedOpen] = useState(false);
   const [isAddTherapyOpen, setIsAddTherapyOpen] = useState(false);
@@ -86,20 +102,78 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
   // Background / Locked Phone Simulation
   const [isPhoneLocked, setIsPhoneLocked] = useState(false);
   const [bgCountdown, setBgCountdown] = useState<number | null>(null);
-  const [webNotificationAllowed, setWebNotificationAllowed] = useState(false);
-
-  // Simulated notification banner
   const [incomingNotificationDose, setIncomingNotificationDose] = useState<DoseItem | null>(null);
 
-  // Today's date string
+  // Selected date in Today strip (default today)
   const todayStr = new Date().toISOString().substring(0, 10);
-  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string>(todayStr);
+  const [selectedDayStr, setSelectedDayStr] = useState<string>(todayStr);
 
-  const todayDoses = doses.filter((d) => d.date === todayStr);
-  const sortedTodayDoses = sortDosesChronologically(todayDoses);
+  // Build 7-day strip centered around today (-2 to +4 days)
+  const weekStrip = useMemo(() => {
+    const base = new Date(`${todayStr}T12:00:00Z`);
+    const days = [];
+    for (let i = -2; i <= 4; i++) {
+      const d = new Date(base);
+      d.setUTCDate(d.getUTCDate() + i);
+      const iso = d.toISOString().substring(0, 10);
+      const dayShort = d.toLocaleDateString('pl-PL', { weekday: 'short' }).replace('.', '');
+      days.push({
+        iso,
+        dayShort,
+        dayNum: d.getUTCDate(),
+        isToday: iso === todayStr,
+      });
+    }
+    return days;
+  }, [todayStr]);
 
-  // Filtered doses for Today (wg statusu oraz wpisanej frazy wyszukiwania)
-  const displayedDoses = sortedTodayDoses.filter((d) => {
+  // Build doses for selectedDayStr (using stored doses first, falling back to scheduled templates for active meds)
+  const dosesForSelectedDay = useMemo(() => {
+    const storedForDay = doses.filter((d) => d.date === selectedDayStr);
+    const storedIds = new Set(storedForDay.map((d) => d.id));
+    const combined: DoseItem[] = [...storedForDay];
+
+    for (const med of medications) {
+      if (!isMedicationActiveOnDate(med, selectedDayStr)) continue;
+      const therapy = therapies.find((t) => t.id === med.therapyId);
+      const profId = med.profileId || therapy?.profileId || 'self';
+      for (const time of med.times) {
+        const expectedId = `${med.id}_${selectedDayStr}_${time.replace(':', '')}`;
+        if (!storedIds.has(expectedId)) {
+          combined.push({
+            id: expectedId,
+            medicationId: med.id,
+            therapyId: med.therapyId,
+            profileId: profId,
+            medicationName: med.name,
+            therapyName: therapy?.name || 'Terapia',
+            therapyColor: therapy?.color || '#0F766E',
+            type: med.type,
+            doseAmount: med.doseAmount,
+            instructions: med.instructions,
+            date: selectedDayStr,
+            time,
+            status: 'pending',
+          });
+        }
+      }
+    }
+
+    // Apply profile filter
+    const filteredByProfile =
+      activeProfileId === 'all'
+        ? combined
+        : combined.filter((d) => {
+            const med = medications.find((m) => m.id === d.medicationId);
+            const therapy = therapies.find((t) => t.id === d.therapyId);
+            const profId = d.profileId || med?.profileId || therapy?.profileId || 'self';
+            return profId === activeProfileId;
+          });
+
+    return sortDosesChronologically(filteredByProfile);
+  }, [doses, medications, therapies, selectedDayStr, activeProfileId]);
+
+  const displayedDoses = dosesForSelectedDay.filter((d) => {
     if (statusFilter !== 'all' && d.status !== statusFilter) return false;
     if (searchQuery.trim()) {
       const q = normalizePolishText(searchQuery);
@@ -111,9 +185,20 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
     return true;
   });
 
-  const compliance = calculateCompliance(todayDoses);
+  const compliance = calculateCompliance(dosesForSelectedDay);
 
-  // Dźwięk alarmu przy powiadomieniu (Web Audio API)
+  // Cabinet low-stock / expiry alerts count
+  const cabinetAlertsCount = useMemo(() => {
+    return medications.filter((med) => {
+      if (activeProfileId !== 'all') {
+        const therapy = therapies.find((t) => t.id === med.therapyId);
+        const profId = med.profileId || therapy?.profileId || 'self';
+        if (profId !== activeProfileId) return false;
+      }
+      return evaluateCabinetStatus(med).status !== 'ok';
+    }).length;
+  }, [medications, therapies, activeProfileId]);
+
   const playGentleChime = () => {
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
@@ -122,9 +207,9 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
-      osc.frequency.setValueAtTime(880, ctx.currentTime + 0.15); // A5
-      gain.gain.setValueAtTime(0.25, ctx.currentTime);
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+      osc.frequency.setValueAtTime(880, ctx.currentTime + 0.15);
+      gain.gain.setValueAtTime(0.22, ctx.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.85);
       osc.connect(gain);
       gain.connect(ctx.destination);
@@ -133,20 +218,17 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
     } catch (_) {}
   };
 
-  // Prawdziwe powiadomienie systemowe przeglądarki (Web Notifications API)
   const triggerNativeDesktopNotification = (dose: DoseItem) => {
     if (typeof window !== 'undefined' && 'Notification' in window) {
       if (Notification.permission === 'granted') {
-        new Notification(`💊 Czas na lek: ${dose.medicationName}`, {
-          body: `Dawka: ${formatDoseDisplay(dose.doseAmount, dose.type)} (${dose.therapyName})`,
-          icon: '/favicon.ico',
+        new Notification(`Czas na lek: ${dose.medicationName}`, {
+          body: `Dawka: ${formatDoseDisplay(dose.doseAmount, dose.type)} · ${dose.therapyName}`,
         });
       } else if (Notification.permission !== 'denied') {
         Notification.requestPermission().then((perm) => {
           if (perm === 'granted') {
-            setWebNotificationAllowed(true);
-            new Notification(`💊 Czas na lek: ${dose.medicationName}`, {
-              body: `Dawka: ${formatDoseDisplay(dose.doseAmount, dose.type)} (${dose.therapyName})`,
+            new Notification(`Czas na lek: ${dose.medicationName}`, {
+              body: `Dawka: ${formatDoseDisplay(dose.doseAmount, dose.type)} · ${dose.therapyName}`,
             });
           }
         });
@@ -154,16 +236,16 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
     }
   };
 
+  const handleTakeDoseWithFeedback = (dose: DoseItem) => {
+    onTakeDose(dose.id, dose);
 
-  const handleTakeDoseWithFeedback = (doseId: string) => {
-    onTakeDose(doseId);
-    
-    // Check if that was the last remaining dose
-    const remainingPending = todayDoses.filter((d) => d.id !== doseId && d.status !== 'taken').length;
-    if (remainingPending === 0) {
+    const remainingPending = dosesForSelectedDay.filter(
+      (d) => d.id !== dose.id && d.status !== 'taken'
+    ).length;
+    if (remainingPending === 0 && dosesForSelectedDay.length > 0) {
       confetti({
-        particleCount: 70,
-        spread: 60,
+        particleCount: 65,
+        spread: 58,
         origin: { y: 0.6 },
         colors: ['#0f766e', '#14b8a6', '#f59e0b', '#3b82f6'],
       });
@@ -171,8 +253,9 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
   };
 
   const handleTriggerSimulatedAlarm = () => {
-    // Pick the first pending or snoozed dose, or the first dose
-    const target = todayDoses.find((d) => d.status === 'pending' || d.status === 'snoozed') || todayDoses[0];
+    const target =
+      dosesForSelectedDay.find((d) => d.status === 'pending' || d.status === 'snoozed') ||
+      dosesForSelectedDay[0];
     if (target) {
       playGentleChime();
       setIncomingNotificationDose(target);
@@ -180,11 +263,12 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
     }
   };
 
-  // Symulacja działania w tle – zablokowanie telefonu i test po 5 sekundach
   const handleStartBackgroundTest = () => {
     setIsPhoneLocked(true);
     setBgCountdown(5);
-    const target = todayDoses.find((d) => d.status === 'pending' || d.status === 'snoozed') || todayDoses[0];
+    const target =
+      dosesForSelectedDay.find((d) => d.status === 'pending' || d.status === 'snoozed') ||
+      dosesForSelectedDay[0];
 
     let remaining = 5;
     const interval = setInterval(() => {
@@ -203,533 +287,589 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
     }, 1000);
   };
 
+  // Ring geometry for SVG Adherence Ring
+  const ringRadius = 26;
+  const ringCircumference = 2 * Math.PI * ringRadius;
+  const ringOffset = ringCircumference * (1 - compliance.percentage / 100);
+
   return (
-    <div className="flex flex-col items-center justify-center p-2 sm:p-6 w-full">
-      {/* Simulation Controls Bar */}
-      <div className="w-full max-w-sm mb-3 flex flex-col gap-2 px-1">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-xs text-slate-700 font-semibold">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span>Symulator Android (Offline SQLite)</span>
-          </div>
-
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => setIsBgDiagnosisOpen(true)}
-              className="p-1.5 text-slate-500 hover:text-teal-700 hover:bg-slate-100 rounded-lg transition-colors flex items-center gap-1 text-2xs font-semibold"
-              title="Dlaczego powiadomienia w tle nie działały i jak to naprawiono?"
-            >
-              <HelpCircle className="w-4 h-4 text-teal-600" />
-              <span className="hidden xs:inline">Działanie w tle</span>
-            </button>
-            <button
-              type="button"
-              onClick={onResetSampleData}
-              className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors"
-              title="Zresetuj przykładowe dane"
-              aria-label="Zresetuj przykładowe dane"
-            >
-              <RotateCcw className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-
-        {/* Pasek przycisków testowych powiadomień */}
-        <div className="grid grid-cols-2 gap-1.5">
+    <div className="flex flex-col items-center w-full">
+      {/* Compact Simulator Utility Strip (No decorative pulsing dot) */}
+      <div className="w-full max-w-[400px] mb-3 flex items-center justify-between gap-2 px-1">
+        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={handleStartBackgroundTest}
-            className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-2xs font-bold transition-all shadow-xs active:scale-95"
-            title="Symuluj zamkniętą aplikację – telefon zablokuje się i wyśle alarm za 5s"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-semibold transition-colors"
+            title="Zablokuj ekran i przetestuj powiadomienie za 5s"
           >
-            <Lock className="w-3.5 h-3.5" />
-            {bgCountdown !== null ? `Budzenie za ${bgCountdown}s...` : 'Test w tle (zamknięta apka)'}
+            <Lock className="w-3.5 h-3.5 text-teal-300" />
+            <span>{bgCountdown !== null ? `Alarm za ${bgCountdown}s` : 'Test w tle (5s)'}</span>
           </button>
+
           <button
             type="button"
             onClick={handleTriggerSimulatedAlarm}
-            className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-2xs font-bold transition-all shadow-xs active:scale-95"
-            title="Wyślij testowe powiadomienie alarmowe natychmiast"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-semibold transition-colors"
+            title="Wyślij testowe powiadomienie teraz"
           >
             <BellRing className="w-3.5 h-3.5" />
-            Alarm teraz
+            <span>Alarm</span>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setIsBgDiagnosisOpen(true)}
+            className="p-2 text-slate-500 hover:text-teal-700 hover:bg-white rounded-xl transition-colors"
+            title="Diagnostyka powiadomień w tle"
+          >
+            <HelpCircle className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onResetSampleData}
+            className="p-2 text-slate-500 hover:text-slate-900 hover:bg-white rounded-xl transition-colors"
+            title="Przywróć dane demonstracyjne"
+          >
+            <RotateCcw className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-
-      {/* Realistic Mobile Frame */}
-      <div className="relative w-full max-w-sm rounded-[42px] bg-slate-900 p-3 shadow-2xl ring-1 ring-slate-800/80 overflow-hidden">
-        {/* Notch / Speaker bar */}
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 w-28 h-4 bg-slate-950 rounded-full z-40 flex items-center justify-center">
-          <div className="w-10 h-1.5 bg-slate-800 rounded-full" />
+      {/* Dawko-inspired Refined Mobile Device Frame */}
+      <div className="relative w-full max-w-[400px] rounded-[46px] bg-[#161B22] p-3 shadow-[0_24px_60px_-15px_rgba(15,23,42,0.28)] ring-1 ring-slate-800/80">
+        {/* Dynamic Island Speaker Pill */}
+        <div className="absolute top-5 left-1/2 -translate-x-1/2 w-24 h-5 bg-black rounded-full z-40 flex items-center justify-end pr-2">
+          <div className="w-2 h-2 rounded-full bg-slate-800 ring-1 ring-slate-700" />
         </div>
 
         {/* Screen Container */}
-        <div className="relative w-full bg-slate-50 rounded-[34px] overflow-hidden flex flex-col h-[740px] border border-slate-200">
-          
-          {/* Status Bar */}
-          <div className="pt-2 px-6 pb-1 bg-white flex items-center justify-between text-2xs font-bold text-slate-800 shrink-0 select-none">
+        <div className="relative w-full bg-[#F5F7F8] rounded-[36px] overflow-hidden flex flex-col h-[752px] border border-slate-200/80">
+          {/* Device Status Bar */}
+          <div className="pt-3 px-7 pb-1.5 bg-white flex items-center justify-between text-[11px] font-bold text-slate-800 shrink-0 select-none tabular-nums">
             <span>09:41</span>
             <div className="flex items-center gap-1.5 text-slate-700">
-              <span className="text-3xs">5G</span>
-              <ShieldCheck className="w-3 h-3 text-teal-600" />
+              <span>5G</span>
+              <ShieldCheck className="w-3.5 h-3.5 text-teal-700" />
               <span>100%</span>
             </div>
           </div>
 
-          {/* Realistic Android Lock Screen / Simulated Closed App in Background */}
+          {/* Realistic Lock Screen Overlay (Background Test Mode) */}
           {isPhoneLocked && (
-            <div className="absolute inset-0 z-30 bg-linear-to-b from-slate-950 via-teal-950 to-slate-900 text-white flex flex-col justify-between p-6 animate-in fade-in duration-300">
-              {/* Lock screen top icons */}
-              <div className="flex items-center justify-between text-xs text-slate-300 pt-3">
-                <div className="flex items-center gap-1.5">
-                  <Lock className="w-3.5 h-3.5 text-teal-400" />
-                  <span className="text-2xs font-semibold">Ekran zablokowany (Aplikacja w tle)</span>
-                </div>
-                <span className="text-2xs font-bold">100% 🔋</span>
+            <div className="absolute inset-0 z-30 bg-slate-950 text-white flex flex-col justify-between p-6">
+              <div className="flex items-center justify-between text-xs text-slate-400 pt-5">
+                <span className="flex items-center gap-1.5 font-medium">
+                  <Lock className="w-3.5 h-3.5 text-teal-400" /> Ekran zablokowany
+                </span>
+                <span className="tabular-nums">100%</span>
               </div>
 
-              {/* Big Clock & Date */}
               <div className="text-center my-auto space-y-2">
-                <div className="text-5xl font-light tracking-tight text-white drop-shadow-md">
+                <div className="text-5xl font-light tracking-tight text-white tabular-nums">
                   {new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}
                 </div>
-                <div className="text-xs text-teal-200 font-medium capitalize">
+                <div className="text-xs text-teal-200/90 font-medium capitalize">
                   {new Date().toLocaleDateString('pl-PL', { weekday: 'long', day: 'numeric', month: 'long' })}
                 </div>
 
                 {bgCountdown !== null ? (
-                  <div className="mt-6 mx-auto max-w-[250px] p-4 rounded-3xl bg-teal-900/60 border-2 border-teal-400/40 backdrop-blur-md space-y-1.5 shadow-xl animate-pulse">
-                    <div className="flex items-center justify-center gap-2 text-xs font-bold text-teal-300">
-                      <Clock className="w-4 h-4 text-teal-400" />
-                      Budzenie procesora w tle
-                    </div>
-                    <div className="text-3xl font-black text-white">
-                      {bgCountdown} s
-                    </div>
-                    <p className="text-3xs text-teal-200/90 leading-tight">
-                      Symulacja zamkniętej aplikacji. System Android obudzi się dzięki exactAllowWhileIdle.
+                  <div className="mt-6 mx-auto max-w-[240px] p-4 rounded-3xl bg-white/10 border border-white/15 backdrop-blur-md space-y-1">
+                    <div className="text-xs font-semibold text-teal-300">Budzenie alarmu w tle</div>
+                    <div className="text-3xl font-black text-white tabular-nums">{bgCountdown} s</div>
+                    <p className="text-[11px] text-slate-300 leading-snug">
+                      System Android wybudzi powiadomienie przez exactAllowWhileIdle.
                     </p>
                   </div>
                 ) : (
-                  <div className="mt-4 p-3 rounded-2xl bg-slate-900/70 border border-slate-700/60 text-2xs text-slate-300 max-w-[240px] mx-auto space-y-1">
-                    <div className="font-bold text-teal-300 flex items-center justify-center gap-1">
-                      <ShieldCheck className="w-3.5 h-3.5" />
-                      Gotowy do odbioru alarmu
-                    </div>
-                    <p className="text-3xs text-slate-400">
-                      Powiadomienie z górnego paska pojawi się na tym ekranie w wyznaczonej minucie.
-                    </p>
+                  <div className="mt-5 p-3.5 rounded-2xl bg-white/10 border border-white/15 text-xs text-slate-200 max-w-[240px] mx-auto">
+                    Powiadomienie zostało wyzwolone w pasku systemowym.
                   </div>
                 )}
               </div>
 
-              {/* Bottom Unlock Button */}
-              <div className="space-y-2">
-                <button
-                  type="button"
-                  onClick={() => setIsPhoneLocked(false)}
-                  className="w-full py-2.5 px-4 bg-white/10 hover:bg-white/20 border border-white/20 rounded-2xl text-xs font-bold text-white flex items-center justify-center gap-2 transition-all active:scale-98 backdrop-blur-xs"
-                >
-                  <Unlock className="w-4 h-4 text-teal-300" />
-                  Odblokuj / Otwórz MedPlaner
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => setIsPhoneLocked(false)}
+                className="w-full py-3 px-4 bg-white/15 hover:bg-white/25 border border-white/20 rounded-2xl text-xs font-bold text-white flex items-center justify-center gap-2 transition-colors"
+              >
+                <Unlock className="w-4 h-4 text-teal-300" />
+                Odblokuj telefon
+              </button>
             </div>
           )}
 
-
-          {/* App Header */}
-          <div className="bg-white px-5 py-3 border-b border-slate-100 flex items-center justify-between shrink-0 shadow-2xs">
-            <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-teal-600 text-white flex items-center justify-center font-bold text-lg shadow-xs">
-                <Pill className="w-5 h-5" />
-              </div>
-              <div>
-                <h1 className="font-extrabold text-slate-900 text-base leading-tight">MedPlaner</h1>
-                <p className="text-2xs text-slate-500 font-medium">Asystent Terapii i Leków</p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setIsDrugDatabaseOpen(true)}
-                className="p-1.5 text-teal-700 hover:bg-teal-50 rounded-lg transition-colors text-xs font-semibold flex items-center gap-1"
-                title="Baza leków (ponad 2700 leków z dawkami i częstotliwością)"
-              >
-                <Database className="w-4 h-4 text-teal-600" />
-                <span className="text-2xs font-bold text-teal-800">Baza</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('sync')}
-                className={`p-1.5 rounded-lg transition-colors text-xs font-semibold flex items-center gap-1 ${
-                  activeTab === 'sync'
-                    ? 'bg-teal-100 text-teal-800 font-bold'
-                    : 'text-teal-700 hover:bg-teal-50'
-                }`}
-                title="Kopia zapasowa w chmurze (Google Drive)"
-              >
-                <Cloud className="w-4 h-4" />
-                <span className="text-2xs hidden xs:inline">Kopia</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsAddTherapyOpen(true)}
-                className="p-1.5 text-teal-700 hover:bg-teal-50 rounded-lg transition-colors text-xs font-semibold flex items-center gap-1"
-                title="Dodaj terapię"
-              >
-                <Layers className="w-4 h-4" />
-                <span className="text-2xs hidden xs:inline">+Terapia</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsAddMedOpen(true)}
-                className="p-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg transition-colors text-xs font-bold flex items-center gap-1 shadow-2xs"
-                title="Dodaj lek"
-              >
-                <Plus className="w-4 h-4" />
-                <span className="text-2xs">+Lek</span>
-              </button>
-            </div>
-          </div>
-
-
-          {/* Screen Content Body */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            
-            {/* TAB 1: DZIŚ (HOME) */}
-            {activeTab === 'today' && (
-              <>
-                {/* Progress / Compliance Card */}
-                <div className="relative overflow-hidden rounded-2xl bg-linear-to-br from-teal-700 via-teal-800 to-emerald-900 p-4 text-white shadow-md">
-                  <div className="flex items-center justify-between text-2xs uppercase tracking-wider font-semibold text-teal-200">
-                    <span>Harmonogram Dzienny</span>
-                    <span>{new Date().toLocaleDateString('pl-PL', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
-                  </div>
-
-                  <div className="mt-2.5 flex items-baseline justify-between">
-                    <div>
-                      <h2 className="text-2xl font-black tracking-tight">
-                        {compliance.taken} / {compliance.total}
-                      </h2>
-                      <p className="text-xs text-teal-100 font-medium">dawek zażytych dzisiaj</p>
-                    </div>
-                    <div className="text-right">
-                      <span className="text-2xl font-black text-emerald-300">
-                        {compliance.percentage}%
-                      </span>
-                      <p className="text-3xs text-teal-200">realizacja</p>
-                    </div>
-                  </div>
-
-                  {/* Progress Bar */}
-                  <div className="mt-3 w-full bg-teal-950/60 rounded-full h-2 overflow-hidden">
-                    <div
-                      className="bg-emerald-400 h-full rounded-full transition-all duration-500 ease-out"
-                      style={{ width: `${compliance.percentage}%` }}
-                    />
-                  </div>
+          {/* Clean iOS-inspired App Header */}
+          <div className="bg-white px-5 pt-2 pb-3 border-b border-slate-200/70 shrink-0">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-teal-700 text-white flex items-center justify-center">
+                  <Pill className="w-4 h-4" />
                 </div>
-
-                {/* Szybki pasek wyszukiwania leków i terapii */}
-                <div className="relative">
-                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Szukaj leku, dawki lub terapii..."
-                    className="w-full pl-8.5 pr-8 py-2 rounded-xl border border-slate-200/90 bg-white text-xs text-slate-800 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:border-teal-500 shadow-2xs transition-all"
-                  />
-                  {searchQuery && (
-                    <button
-                      type="button"
-                      onClick={() => setSearchQuery('')}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100"
-                      title="Wyczyść wyszukiwanie"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  )}
+                <div>
+                  <h1 className="font-extrabold text-slate-900 text-base leading-tight tracking-tight">
+                    MedPlaner
+                  </h1>
+                  <p className="text-[11px] text-slate-500 font-medium">
+                    {activeProfileId === 'all'
+                      ? 'Wszyscy domownicy'
+                      : `Profil: ${profiles.find((p) => p.id === activeProfileId)?.name || 'Mój profil'}`}
+                  </p>
                 </div>
+              </div>
 
-                {/* Szybki link do oficjalnej bazy leków URPL / NFZ */}
+              <div className="flex items-center gap-1.5">
                 <button
                   type="button"
                   onClick={() => setIsDrugDatabaseOpen(true)}
-                  className="w-full p-2.5 rounded-2xl bg-linear-to-r from-teal-50 via-emerald-50 to-teal-50 border border-teal-200 hover:border-teal-400 text-teal-900 flex items-center justify-between text-2xs font-bold transition-all shadow-2xs group text-left"
+                  className="px-2.5 py-1.5 text-teal-800 bg-teal-50 hover:bg-teal-100 rounded-xl text-xs font-bold flex items-center gap-1 transition-colors"
+                  title="Otwórz bazę ponad 2700 leków"
+                >
+                  <Database className="w-3.5 h-3.5" />
+                  <span>Baza</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsAddMedOpen(true)}
+                  className="px-3 py-1.5 bg-teal-700 hover:bg-teal-800 text-white rounded-xl text-xs font-bold flex items-center gap-1 transition-colors"
+                  title="Dodaj nowy lek"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Lek</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Profile Switcher Strip (Dawko Family Profiles) */}
+            {profiles.length > 1 && activeTab !== 'sync' && (
+              <div className="mt-2.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                <button
+                  type="button"
+                  onClick={() => onSelectProfile('all')}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap transition-colors ${
+                    activeProfileId === 'all'
+                      ? 'bg-slate-900 text-white'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  Wszyscy
+                </button>
+                {profiles.map((prof) => {
+                  const selected = activeProfileId === prof.id;
+                  return (
+                    <button
+                      key={prof.id}
+                      type="button"
+                      onClick={() => onSelectProfile(prof.id)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap flex items-center gap-1.5 transition-colors ${
+                        selected
+                          ? 'bg-teal-700 text-white'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      <span
+                        className="w-2 h-2 rounded-full shrink-0"
+                        style={{ backgroundColor: selected ? '#99F6E4' : prof.avatarColor }}
+                      />
+                      <span>{prof.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Main Scrollable Screen Content */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-3.5 no-scrollbar">
+            {/* TAB 1: DZIŚ (DAWKO-INSPIRED TODAY VIEW) */}
+            {activeTab === 'today' && (
+              <>
+                {/* 7-Day Horizontal Strip right inside Today */}
+                <div className="bg-white rounded-2xl border border-slate-200/80 p-2 grid grid-cols-7 gap-1">
+                  {weekStrip.map((day) => {
+                    const isSelected = day.iso === selectedDayStr;
+                    return (
+                      <button
+                        key={day.iso}
+                        type="button"
+                        onClick={() => setSelectedDayStr(day.iso)}
+                        className={`flex flex-col items-center justify-center py-2 rounded-xl transition-all tabular-nums ${
+                          isSelected
+                            ? 'bg-teal-700 text-white'
+                            : 'text-slate-600 hover:bg-slate-50'
+                        }`}
+                      >
+                        <span
+                          className={`text-[10px] uppercase font-bold ${
+                            isSelected ? 'text-teal-200' : 'text-slate-400'
+                          }`}
+                        >
+                          {day.dayShort}
+                        </span>
+                        <span className="text-sm font-extrabold mt-0.5">{day.dayNum}</span>
+                        <span
+                          className={`w-1 h-1 rounded-full mt-0.5 ${
+                            day.isToday
+                              ? isSelected
+                                ? 'bg-emerald-300'
+                                : 'bg-teal-600'
+                              : 'bg-transparent'
+                          }`}
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Hero Summary Card with SVG Circular Adherence Ring */}
+                <div className="rounded-2xl bg-white border border-slate-200/80 p-4 shadow-2xs flex items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-teal-700">
+                      {selectedDayStr === todayStr
+                        ? 'Dzisiejsze dawkowanie'
+                        : new Date(`${selectedDayStr}T12:00:00Z`).toLocaleDateString('pl-PL', {
+                            weekday: 'long',
+                            day: 'numeric',
+                            month: 'short',
+                          })}
+                    </p>
+                    <div className="text-2xl font-black text-slate-900 tracking-tight tabular-nums">
+                      {compliance.taken} z {compliance.total}{' '}
+                      <span className="text-sm font-semibold text-slate-500">dawek</span>
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      {compliance.total === 0
+                        ? 'Brak zaplanowanych leków'
+                        : compliance.taken === compliance.total
+                        ? 'Wszystkie dawki na ten dzień przyjęte'
+                        : `Pozostało ${compliance.total - compliance.taken} do przyjęcia`}
+                    </p>
+                  </div>
+
+                  {/* SVG Adherence Ring */}
+                  <div className="relative w-16 h-16 shrink-0 flex items-center justify-center">
+                    <svg className="w-16 h-16 -rotate-90" viewBox="0 0 64 64">
+                      <circle
+                        cx="32"
+                        cy="32"
+                        r={ringRadius}
+                        fill="none"
+                        stroke="#E2E8F0"
+                        strokeWidth="6"
+                      />
+                      <circle
+                        cx="32"
+                        cy="32"
+                        r={ringRadius}
+                        fill="none"
+                        stroke="#0F766E"
+                        strokeWidth="6"
+                        strokeLinecap="round"
+                        strokeDasharray={ringCircumference}
+                        strokeDashoffset={ringOffset}
+                        className="transition-all duration-500 ease-out"
+                      />
+                    </svg>
+                    <span className="absolute text-xs font-extrabold text-slate-900 tabular-nums">
+                      {compliance.percentage}%
+                    </span>
+                  </div>
+                </div>
+
+                {/* Cabinet Alert Shortcut (only shown when real low stock or expiring meds exist) */}
+                {cabinetAlertsCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('cabinet')}
+                    className="w-full p-3 rounded-2xl bg-amber-50/90 border border-amber-200/80 flex items-center justify-between text-left hover:bg-amber-50 transition-colors"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                      <div>
+                        <p className="text-xs font-bold text-amber-950">
+                          Apteczka: {cabinetAlertsCount}{' '}
+                          {cabinetAlertsCount === 1 ? 'lek wymaga uwagi' : 'leki wymagają uwagi'}
+                        </p>
+                        <p className="text-[11px] text-amber-800">
+                          Sprawdź kończące się opakowania i daty ważności
+                        </p>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-amber-700 shrink-0" />
+                  </button>
+                )}
+
+                {/* Search + Segmented Status Filter */}
+                <div className="space-y-2">
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Szukaj leku, dawki lub terapii..."
+                      className="w-full pl-9 pr-8 py-2.5 rounded-xl border border-slate-200 bg-white text-xs text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-teal-600"
+                    />
+                    {searchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Clean segmented filter tabs (No pill stack) */}
+                  <div className="grid grid-cols-4 bg-slate-200/70 p-0.5 rounded-xl text-[11px] font-bold tabular-nums">
+                    {[
+                      { id: 'all', label: `Wszystkie (${dosesForSelectedDay.length})` },
+                      {
+                        id: 'pending',
+                        label: `Czeka (${dosesForSelectedDay.filter((d) => d.status === 'pending').length})`,
+                      },
+                      {
+                        id: 'taken',
+                        label: `Wzięte (${dosesForSelectedDay.filter((d) => d.status === 'taken').length})`,
+                      },
+                      {
+                        id: 'snoozed',
+                        label: `Odłożone (${dosesForSelectedDay.filter((d) => d.status === 'snoozed').length})`,
+                      },
+                    ].map((f) => (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => setStatusFilter(f.id as any)}
+                        className={`py-1.5 px-1 rounded-lg transition-all truncate ${
+                          statusFilter === f.id
+                            ? 'bg-white text-slate-900 shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Quick Drug Registry Link */}
+                <button
+                  type="button"
+                  onClick={() => setIsDrugDatabaseOpen(true)}
+                  className="w-full p-3 rounded-2xl bg-white border border-slate-200/80 hover:border-teal-400 flex items-center justify-between text-left transition-colors group"
                 >
                   <div className="flex items-center gap-2.5">
-                    <div className="w-7 h-7 rounded-xl bg-teal-700 text-white flex items-center justify-center shrink-0 shadow-xs">
+                    <div className="w-8 h-8 rounded-xl bg-teal-50 text-teal-700 flex items-center justify-center shrink-0">
                       <Database className="w-4 h-4" />
                     </div>
                     <div>
-                      <div className="text-slate-900 font-extrabold flex items-center gap-1.5">
-                        <span>Baza Leków URPL / NFZ</span>
-                        <span className="text-3xs px-1.5 py-0.2 bg-teal-200/80 text-teal-900 rounded font-bold">2700+ leków</span>
+                      <div className="text-xs font-extrabold text-slate-900">
+                        Baza Leków URPL / NFZ · 2700+ pozycji
                       </div>
-                      <div className="text-3xs text-slate-500 font-medium">
-                        Szukaj leku, wybierz jednostkę dawki i dodaj do terapii
+                      <div className="text-[11px] text-slate-500">
+                        Wyszukaj lek po nazwie lub substancji czynnej
                       </div>
                     </div>
                   </div>
-                  <ChevronRight className="w-4 h-4 text-teal-700 group-hover:translate-x-0.5 transition-transform shrink-0" />
+                  <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-teal-700 transition-colors shrink-0" />
                 </button>
 
-
-                {/* Status Quick Filter Chips */}
-                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-2xs">
-                  <span className="text-slate-400 flex items-center gap-1 font-semibold pr-1">
-                    <Filter className="w-3 h-3" /> Filtr:
-                  </span>
-                  {[
-                    { id: 'all', label: `Wszystkie (${todayDoses.length})` },
-                    { id: 'pending', label: `Oczekuje (${todayDoses.filter((d) => d.status === 'pending').length})` },
-                    { id: 'taken', label: `Wzięte (${todayDoses.filter((d) => d.status === 'taken').length})` },
-                    { id: 'snoozed', label: `Odłożone (${todayDoses.filter((d) => d.status === 'snoozed').length})` },
-                  ].map((f) => (
-                    <button
-                      key={f.id}
-                      type="button"
-                      onClick={() => setStatusFilter(f.id as any)}
-                      className={`px-2.5 py-1 rounded-full font-semibold whitespace-nowrap transition-all ${
-                        statusFilter === f.id
-                          ? 'bg-teal-700 text-white shadow-2xs'
-                          : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
-                      }`}
-                    >
-                      {f.label}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Doses Chronological List */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between text-xs font-bold text-slate-800 px-0.5">
-                    <span className="flex items-center gap-1.5">
-                      <span>Leki na dziś</span>
-                      {searchQuery && (
-                        <span className="text-2xs font-normal text-teal-700 bg-teal-50 px-2 py-0.5 rounded-full border border-teal-200">
-                          filtr: "{searchQuery}"
-                        </span>
-                      )}
-                    </span>
-                    <span className="text-2xs font-medium text-slate-500">
-                      {displayedDoses.length} {displayedDoses.length === 1 ? 'dawka' : 'dawek'}
-                    </span>
+                {/* Chronological Time-of-Day Timeline */}
+                {displayedDoses.length === 0 ? (
+                  <div className="bg-white rounded-2xl border border-slate-200/80 p-8 text-center">
+                    <Sparkles className="w-7 h-7 text-teal-400 mx-auto mb-2" />
+                    <p className="text-slate-800 font-bold text-sm">
+                      {searchQuery
+                        ? `Brak dawek dla "${searchQuery}"`
+                        : 'Brak dawek do wyświetlenia'}
+                    </p>
+                    <p className="text-slate-400 text-xs mt-1">
+                      Dodaj lek z bazy lub zmień wybrany filtr.
+                    </p>
                   </div>
+                ) : (
+                  (() => {
+                    const morning = displayedDoses.filter(
+                      (d) => (d.status === 'snoozed' && d.snoozedUntil ? d.snoozedUntil : d.time) < '12:00'
+                    );
+                    const afternoon = displayedDoses.filter((d) => {
+                      const t = d.status === 'snoozed' && d.snoozedUntil ? d.snoozedUntil : d.time;
+                      return t >= '12:00' && t < '18:00';
+                    });
+                    const evening = displayedDoses.filter(
+                      (d) => (d.status === 'snoozed' && d.snoozedUntil ? d.snoozedUntil : d.time) >= '18:00'
+                    );
 
-                  {displayedDoses.length === 0 ? (
-                    <div className="bg-white rounded-2xl border border-slate-200/80 p-8 text-center">
-                      <Sparkles className="w-8 h-8 text-teal-400 mx-auto mb-2" />
-                      <p className="text-slate-700 font-bold text-sm">
-                        {searchQuery
-                          ? `Brak dawek pasujących do "${searchQuery}"`
-                          : statusFilter === 'all'
-                          ? 'Brak zaplanowanych leków na dziś!'
-                          : 'Brak leków o wybranym statusie.'}
-                      </p>
-                      <p className="text-slate-400 text-xs mt-1">
-                        {searchQuery ? (
-                          <button
-                            type="button"
-                            onClick={() => setSearchQuery('')}
-                            className="text-teal-600 hover:text-teal-700 font-bold underline"
-                          >
-                            Wyczyść filtr wyszukiwania
-                          </button>
-                        ) : (
-                          'Dodaj nowy lek do terapii przyciskiem u góry.'
-                        )}
-                      </p>
-                    </div>
-                  ) : (
-                    (() => {
-                      const morning = displayedDoses.filter((d) => (d.status === 'snoozed' && d.snoozedUntil ? d.snoozedUntil : d.time) < '12:00');
-                      const afternoon = displayedDoses.filter((d) => {
-                        const t = d.status === 'snoozed' && d.snoozedUntil ? d.snoozedUntil : d.time;
-                        return t >= '12:00' && t < '18:00';
-                      });
-                      const evening = displayedDoses.filter((d) => (d.status === 'snoozed' && d.snoozedUntil ? d.snoozedUntil : d.time) >= '18:00');
+                    const renderSection = (
+                      title: string,
+                      items: DoseItem[],
+                      icon: React.ReactNode
+                    ) => {
+                      if (items.length === 0) return null;
+                      const takenCount = items.filter((d) => d.status === 'taken').length;
 
-                      const renderGroup = (
-                        title: string,
-                        items: typeof displayedDoses,
-                        icon: React.ReactNode,
-                        badgeClass: string,
-                        containerClass: string,
-                        titleColor: string
-                      ) => {
-                        if (items.length === 0) return null;
-                        const takenCount = items.filter((d) => d.status === 'taken').length;
-
-                        return (
-                          <div className={`rounded-2xl p-3 border space-y-2.5 transition-all ${containerClass}`}>
-                            <div className="flex items-center justify-between px-1">
-                              <div className={`flex items-center gap-1.5 font-extrabold text-2xs uppercase tracking-wider ${titleColor}`}>
-                                {icon}
-                                <span>{title}</span>
-                              </div>
-                              <span className={`text-3xs font-bold px-2 py-0.5 rounded-full ${badgeClass}`}>
-                                {takenCount}/{items.length} wzięte
-                              </span>
+                      return (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between px-1">
+                            <div className="flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                              {icon}
+                              <span>{title}</span>
                             </div>
+                            <span className="text-[11px] font-bold text-slate-500 tabular-nums">
+                              {takenCount}/{items.length}
+                            </span>
+                          </div>
 
-                            <div className="space-y-2">
-                              {items.map((dose) => {
-                                const isTaken = dose.status === 'taken';
-                                const isSnoozed = dose.status === 'snoozed';
-                                const isSkipped = dose.status === 'skipped';
+                          <div className="space-y-2">
+                            {items.map((dose) => {
+                              const isTaken = dose.status === 'taken';
+                              const isSnoozed = dose.status === 'snoozed';
+                              const isSkipped = dose.status === 'skipped';
+                              const linkedMed = medications.find((m) => m.id === dose.medicationId);
+                              const stockEval = linkedMed ? evaluateCabinetStatus(linkedMed) : null;
 
-                                return (
-                                  <div
-                                    key={dose.id}
-                                    className={`bg-white rounded-xl border p-3 transition-all shadow-2xs ${
-                                      isTaken
-                                        ? 'border-emerald-100 bg-emerald-50/30'
-                                        : isSnoozed
-                                        ? 'border-amber-200 bg-amber-50/30'
-                                        : 'border-slate-200/80 hover:border-teal-200'
-                                    }`}
-                                  >
-                                    <div className="flex items-start gap-2.5">
-                                      <div
-                                        className={`flex flex-col items-center justify-center w-12 py-1.5 rounded-lg text-center shrink-0 border ${
-                                          isTaken
-                                            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                                            : isSnoozed
-                                            ? 'bg-amber-100 border-amber-300 text-amber-900 animate-pulse'
-                                            : 'bg-slate-50 border-slate-200 text-slate-800'
-                                        }`}
-                                      >
-                                        <Clock className="w-3 h-3 mb-0.5 text-slate-400" />
-                                        <span className="font-extrabold text-xs leading-tight">
-                                          {isSnoozed && dose.snoozedUntil ? dose.snoozedUntil : dose.time}
-                                        </span>
+                              return (
+                                <div
+                                  key={dose.id}
+                                  className={`bg-white rounded-2xl border p-3.5 transition-all ${
+                                    isTaken
+                                      ? 'border-emerald-200/70 bg-emerald-50/20'
+                                      : isSnoozed
+                                      ? 'border-amber-300/80'
+                                      : 'border-slate-200/80'
+                                  }`}
+                                >
+                                  <div className="flex items-start gap-3">
+                                    {/* Time Block */}
+                                    <div
+                                      className={`w-13 py-2 rounded-xl text-center shrink-0 tabular-nums ${
+                                        isTaken
+                                          ? 'bg-emerald-50 text-emerald-800'
+                                          : isSnoozed
+                                          ? 'bg-amber-100 text-amber-900'
+                                          : 'bg-slate-100 text-slate-900'
+                                      }`}
+                                    >
+                                      <div className="text-xs font-black leading-none">
+                                        {isSnoozed && dose.snoozedUntil ? dose.snoozedUntil : dose.time}
                                       </div>
-
-                                      <div className="flex-1 min-w-0">
-                                        <div className="flex items-center gap-1 mb-0.5 flex-wrap">
-                                          <span
-                                            className="w-2 h-2 rounded-full shrink-0"
-                                            style={{ backgroundColor: dose.therapyColor }}
-                                          />
-                                          <span className="text-3xs font-semibold text-slate-500 truncate">
-                                            {dose.therapyName}
-                                          </span>
-                                          <span
-                                            className={`ml-auto text-3xs font-extrabold px-1.5 py-0.2 rounded-full border ${
-                                              isTaken
-                                                ? 'bg-emerald-100 border-emerald-200 text-emerald-800'
-                                                : isSnoozed
-                                                ? 'bg-amber-100 border-amber-300 text-amber-900'
-                                                : isSkipped
-                                                ? 'bg-rose-100 border-rose-200 text-rose-800'
-                                                : 'bg-slate-100 border-slate-200 text-slate-700'
-                                            }`}
-                                          >
-                                            {isTaken
-                                              ? `Wzięte o ${dose.takenAt || dose.time}`
-                                              : isSnoozed
-                                              ? `Odroczone`
-                                              : isSkipped
-                                              ? 'Pominięte'
-                                              : 'Oczekuje'}
-                                          </span>
-                                        </div>
-
-                                        <h4
-                                          className={`font-bold text-xs leading-tight truncate ${
-                                            isTaken ? 'line-through text-slate-400' : 'text-slate-900'
-                                          }`}
-                                        >
-                                          {dose.medicationName}
-                                        </h4>
-
-                                        <div className="flex items-center gap-1.5 mt-0.5 text-2xs text-slate-600">
-                                          <span className="font-bold text-teal-800 bg-teal-50 px-1 py-0.2 rounded text-3xs">
-                                            {formatDoseDisplay(dose.doseAmount, dose.type)}
-                                          </span>
-                                          {dose.instructions && (
-                                            <span className="text-3xs text-slate-500 truncate italic">
-                                              • {dose.instructions}
-                                            </span>
-                                          )}
-                                        </div>
+                                      <div className="text-[9px] font-semibold uppercase tracking-wide mt-1 opacity-75">
+                                        {isTaken
+                                          ? 'Wzięte'
+                                          : isSnoozed
+                                          ? 'Odłoż.'
+                                          : isSkipped
+                                          ? 'Pomin.'
+                                          : 'Plan'}
                                       </div>
                                     </div>
 
-                                    {!isTaken && (
-                                      <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center gap-1.5">
-                                        <button
-                                          type="button"
-                                          onClick={() => handleTakeDoseWithFeedback(dose.id)}
-                                          className="flex-1 py-1 px-2.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold text-2xs flex items-center justify-center gap-1 transition-all shadow-xs active:scale-95"
-                                        >
-                                          <Check className="w-3 h-3" />
-                                          Wziąłem
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => setSnoozeDoseTarget(dose)}
-                                          className="py-1 px-2.5 rounded-lg bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-900 font-bold text-2xs flex items-center justify-center gap-1 transition-all"
-                                        >
-                                          <Clock className="w-3 h-3 text-amber-700" />
-                                          Odłóż
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => onSkipDose(dose.id)}
-                                          className="py-1 px-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 text-3xs font-semibold"
-                                          title="Pomiń dawkę"
-                                        >
-                                          Pomiń
-                                        </button>
+                                    {/* Unboxed Metadata + Drug Name */}
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-1.5 text-[11px] text-slate-500 font-medium">
+                                        <span
+                                          className="w-2 h-2 rounded-full shrink-0"
+                                          style={{ backgroundColor: dose.therapyColor }}
+                                        />
+                                        <span className="truncate">{dose.therapyName}</span>
+                                        {isTaken && dose.takenAt && (
+                                          <span className="ml-auto text-emerald-700 font-bold tabular-nums shrink-0">
+                                            o {dose.takenAt}
+                                          </span>
+                                        )}
                                       </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      };
 
-                      return (
-                        <div className="space-y-3">
-                          {renderGroup(
-                            'Rano (do 12:00)',
-                            morning,
-                            <SunMedium className="w-3.5 h-3.5 text-amber-600" />,
-                            'bg-amber-100 text-amber-800',
-                            'bg-amber-500/10 border-amber-200/70',
-                            'text-amber-800'
-                          )}
-                          {renderGroup(
-                            'Popołudnie (12:00 - 18:00)',
-                            afternoon,
-                            <Sun className="w-3.5 h-3.5 text-sky-600" />,
-                            'bg-sky-100 text-sky-800',
-                            'bg-sky-500/10 border-sky-200/70',
-                            'text-sky-800'
-                          )}
-                          {renderGroup(
-                            'Wieczór i Noc (od 18:00)',
-                            evening,
-                            <Moon className="w-3.5 h-3.5 text-indigo-600" />,
-                            'bg-indigo-100 text-indigo-800',
-                            'bg-indigo-500/10 border-indigo-200/70',
-                            'text-indigo-800'
-                          )}
+                                      <h4
+                                        className={`font-bold text-sm leading-snug mt-0.5 truncate ${
+                                          isTaken ? 'line-through text-slate-400' : 'text-slate-900'
+                                        }`}
+                                      >
+                                        {dose.medicationName}
+                                      </h4>
+
+                                      <p className="text-[11px] text-slate-600 mt-0.5 truncate">
+                                        <strong className="text-teal-800">
+                                          {formatDoseDisplay(dose.doseAmount, dose.type)}
+                                        </strong>
+                                        {dose.instructions && (
+                                          <span className="text-slate-500"> · {dose.instructions}</span>
+                                        )}
+                                      </p>
+
+                                      {linkedMed &&
+                                        stockEval?.isLowStock &&
+                                        typeof linkedMed.stockQuantity === 'number' && (
+                                          <p className="text-[11px] font-semibold text-amber-700 mt-1 flex items-center gap-1 tabular-nums">
+                                            <AlertTriangle className="w-3 h-3 shrink-0" />
+                                            <span>
+                                              Zapas: {linkedMed.stockQuantity}{' '}
+                                              {MEDICATION_TYPE_LABELS[linkedMed.type]?.unit || 'szt.'}
+                                            </span>
+                                          </p>
+                                        )}
+                                    </div>
+                                  </div>
+
+                                  {!isTaken && (
+                                    <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleTakeDoseWithFeedback(dose)}
+                                        className="flex-1 min-h-[38px] py-1.5 px-3 rounded-xl bg-teal-700 hover:bg-teal-800 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors"
+                                      >
+                                        <Check className="w-3.5 h-3.5" />
+                                        <span>Wziąłem</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setSnoozeDoseTarget(dose)}
+                                        className="min-h-[38px] py-1.5 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs flex items-center justify-center gap-1 transition-colors"
+                                      >
+                                        <Clock className="w-3.5 h-3.5 text-amber-600" />
+                                        <span>Odłóż</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => onSkipDose(dose.id, dose)}
+                                        className="min-h-[38px] px-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 text-[11px] font-semibold"
+                                      >
+                                        Pomiń
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
                       );
-                    })()
-                  )}
-                </div>
+                    };
+
+                    return (
+                      <div className="space-y-4">
+                        {renderSection(
+                          'Rano · do 12:00',
+                          morning,
+                          <SunMedium className="w-3.5 h-3.5 text-amber-600" />
+                        )}
+                        {renderSection(
+                          'Popołudnie · 12:00–18:00',
+                          afternoon,
+                          <Sun className="w-3.5 h-3.5 text-sky-600" />
+                        )}
+                        {renderSection(
+                          'Wieczór · od 18:00',
+                          evening,
+                          <Moon className="w-3.5 h-3.5 text-indigo-600" />
+                        )}
+                      </div>
+                    );
+                  })()
+                )}
               </>
             )}
 
@@ -739,167 +879,171 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                 currentDate={todayStr}
                 allDoses={doses}
                 therapies={therapies}
-                onSelectDate={setSelectedCalendarDate}
-                onTakeDose={handleTakeDoseWithFeedback}
+                onSelectDate={(d) => setSelectedDayStr(d)}
+                onTakeDose={(id) => {
+                  const found = doses.find((d) => d.id === id);
+                  if (found) handleTakeDoseWithFeedback(found);
+                }}
               />
             )}
 
-            {/* TAB 3: TERAPIE I LEKI */}
+            {/* TAB 3: DOMOWA APTECZKA (DAWKO FEATURE) */}
+            {activeTab === 'cabinet' && (
+              <MedicineCabinetView
+                medications={medications}
+                therapies={therapies}
+                profiles={profiles}
+                doses={doses}
+                activeProfileId={activeProfileId}
+                onRefillMedication={onRefillMedication}
+                onUpdateStockAndExpiry={onUpdateStockAndExpiry}
+                compact
+              />
+            )}
+
+            {/* TAB 4: TERAPIE I LEKI */}
             {activeTab === 'therapies' && (
-              <div className="space-y-4">
+              <div className="space-y-3.5">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-bold text-slate-800 text-sm">Aktywne Terapie Medyczne</h3>
+                  <h3 className="font-extrabold text-slate-900 text-sm">Aktywne Terapie</h3>
                   <button
                     type="button"
                     onClick={() => setIsAddTherapyOpen(true)}
-                    className="text-xs text-teal-600 hover:text-teal-700 font-bold flex items-center gap-1"
+                    className="text-xs text-teal-700 hover:text-teal-800 font-bold flex items-center gap-1"
                   >
                     <Plus className="w-3.5 h-3.5" /> Nowa terapia
                   </button>
                 </div>
 
-                {therapies.map((therapy) => {
-                  const therapyMeds = medications.filter((m) => m.therapyId === therapy.id);
+                {therapies
+                  .filter((t) => activeProfileId === 'all' || (t.profileId || 'self') === activeProfileId)
+                  .map((therapy) => {
+                    const therapyMeds = medications.filter((m) => m.therapyId === therapy.id);
+                    const profile = profiles.find((p) => p.id === (therapy.profileId || 'self'));
 
-                  return (
-                    <div
-                      key={therapy.id}
-                      className="bg-white rounded-2xl border border-slate-200/80 p-4 shadow-2xs space-y-3"
-                    >
-                      <div className="flex items-start justify-between">
-                        <div className="flex items-center gap-2.5">
-                          <span
-                            className="w-4 h-4 rounded-full shrink-0 mt-0.5"
-                            style={{ backgroundColor: therapy.color }}
-                          />
-                          <div>
-                            <h4 className="font-bold text-slate-900 text-sm leading-tight">
-                              {therapy.name}
-                            </h4>
-                            {therapy.description && (
-                              <p className="text-2xs text-slate-500 mt-0.5">{therapy.description}</p>
-                            )}
+                    return (
+                      <div
+                        key={therapy.id}
+                        className="bg-white rounded-2xl border border-slate-200/80 p-4 shadow-2xs space-y-3"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-start gap-2.5">
+                            <span
+                              className="w-3.5 h-3.5 rounded-full shrink-0 mt-1"
+                              style={{ backgroundColor: therapy.color }}
+                            />
+                            <div>
+                              <h4 className="font-bold text-slate-900 text-sm leading-tight">
+                                {therapy.name}
+                              </h4>
+                              <p className="text-[11px] text-slate-500 mt-0.5">
+                                {profile?.name || 'Mój profil'} ·{' '}
+                                {therapy.description || 'Terapia aktywna'}
+                              </p>
+                            </div>
                           </div>
                         </div>
-                        <span className="text-3xs font-extrabold uppercase px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                          Aktywna
-                        </span>
-                      </div>
 
-                      {/* Lista leków w tej terapii */}
-                      <div className="bg-slate-50 rounded-xl p-3 space-y-2">
-                        <div className="text-2xs font-bold text-slate-500 uppercase tracking-wider flex items-center justify-between">
-                          <span>Leki w terapii ({therapyMeds.length})</span>
-                          <button
-                            type="button"
-                            onClick={() => setIsAddMedOpen(true)}
-                            className="text-teal-700 hover:underline font-bold"
-                          >
-                            + Dodaj lek
-                          </button>
-                        </div>
-
-                        {therapyMeds.length === 0 ? (
-                          <p className="text-xs text-slate-400 italic">Brak przypisanych leków.</p>
-                        ) : (
-                          therapyMeds.map((m) => (
-                            <div
-                              key={m.id}
-                              className="bg-white p-2.5 rounded-lg border border-slate-200 flex items-center justify-between text-xs hover:border-slate-300 transition-colors"
+                        <div className="bg-slate-50 rounded-xl p-2.5 space-y-2">
+                          <div className="text-[11px] font-bold text-slate-500 flex items-center justify-between px-1">
+                            <span>Leki w terapii ({therapyMeds.length})</span>
+                            <button
+                              type="button"
+                              onClick={() => setIsAddMedOpen(true)}
+                              className="text-teal-700 hover:underline font-bold"
                             >
-                              <div className="flex-1 min-w-0 pr-2">
-                                <div className="font-bold text-slate-800 truncate">{m.name}</div>
-                                <div className="text-2xs text-slate-500 mt-0.5">
-                                  Dawka: <span className="font-semibold text-teal-700">{m.doseAmount} ({m.type})</span> • Godziny: {m.times.join(', ')}
+                              + Dodaj lek
+                            </button>
+                          </div>
+
+                          {therapyMeds.length === 0 ? (
+                            <p className="text-xs text-slate-400 italic px-1">Brak przypisanych leków.</p>
+                          ) : (
+                            therapyMeds.map((m) => (
+                              <div
+                                key={m.id}
+                                className="bg-white p-2.5 rounded-xl border border-slate-200/80 flex items-center justify-between text-xs"
+                              >
+                                <div className="flex-1 min-w-0 pr-2">
+                                  <div className="font-bold text-slate-900 truncate">{m.name}</div>
+                                  <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
+                                    {formatDoseDisplay(m.doseAmount, m.type)} · {m.times.join(', ')}
+                                    {typeof m.stockQuantity === 'number' &&
+                                      ` · Zapas: ${m.stockQuantity}`}
+                                  </div>
                                 </div>
-                              </div>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <span className="text-3xs font-semibold text-teal-700 bg-teal-50 border border-teal-100 px-1.5 py-0.5 rounded-md">
-                                  {m.scheduleType === 'daily' ? 'Codziennie' : 'Harmonogram'}
-                                </span>
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    if (window.confirm(`Czy na pewno chcesz usunąć lek "${m.name}" z terapii "${therapy.name}"? Usunięte zostaną także zaplanowane dla niego dawki.`)) {
-                                      if (onDeleteMedication) {
-                                        onDeleteMedication(m.id);
-                                      }
+                                    if (
+                                      window.confirm(
+                                        `Czy na pewno chcesz usunąć lek "${m.name}" z terapii "${therapy.name}"?`
+                                      )
+                                    ) {
+                                      onDeleteMedication?.(m.id);
                                     }
                                   }}
-                                  className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition-colors"
+                                  className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
                                   title="Usuń lek z terapii"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
                               </div>
-                            </div>
-                          ))
-                        )}
+                            ))
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
               </div>
             )}
 
-            {/* TAB 4: KOPIA I DYSK GOOGLE */}
+            {/* TAB 5: KOPIA I DYSK */}
             {activeTab === 'sync' && (
               <BackupSyncView
                 therapies={therapies}
                 medications={medications}
+                doses={doses}
+                profiles={profiles}
+                onImportBackupData={onImportBackupData}
                 onRestoreSampleBackup={onResetSampleData}
               />
             )}
-
           </div>
 
-          {/* Bottom Navigation Bar */}
-          <div className="bg-white border-t border-slate-200 px-4 py-2 flex items-center justify-around shrink-0 shadow-lg">
-            <button
-              type="button"
-              onClick={() => setActiveTab('today')}
-              className={`flex flex-col items-center gap-1 transition-colors ${
-                activeTab === 'today' ? 'text-teal-700 font-bold' : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <Pill className="w-5 h-5" />
-              <span className="text-2xs">Dziś</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveTab('calendar')}
-              className={`flex flex-col items-center gap-1 transition-colors ${
-                activeTab === 'calendar' ? 'text-teal-700 font-bold' : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <Calendar className="w-5 h-5" />
-              <span className="text-2xs">Kalendarz</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveTab('therapies')}
-              className={`flex flex-col items-center gap-1 transition-colors ${
-                activeTab === 'therapies' ? 'text-teal-700 font-bold' : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <Layers className="w-5 h-5" />
-              <span className="text-2xs">Terapie</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveTab('sync')}
-              className={`flex flex-col items-center gap-1 transition-colors ${
-                activeTab === 'sync' ? 'text-teal-700 font-bold' : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <Cloud className="w-5 h-5" />
-              <span className="text-2xs">Kopia i Dysk</span>
-            </button>
-          </div>
-
+          {/* 5-Tab Bottom Navigation Bar (44px+ targets) */}
+          <nav className="bg-white border-t border-slate-200/80 px-2 py-1.5 grid grid-cols-5 shrink-0">
+            {[
+              { id: 'today', label: 'Dziś', icon: Pill },
+              { id: 'calendar', label: 'Kalendarz', icon: Calendar },
+              { id: 'cabinet', label: 'Apteczka', icon: Package, badge: cabinetAlertsCount },
+              { id: 'therapies', label: 'Terapie', icon: Layers },
+              { id: 'sync', label: 'Kopia', icon: Cloud },
+            ].map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id as any)}
+                  className={`relative min-h-[46px] flex flex-col items-center justify-center gap-0.5 rounded-xl transition-colors ${
+                    isActive ? 'text-teal-700 font-bold' : 'text-slate-400 hover:text-slate-700'
+                  }`}
+                >
+                  <div className="relative">
+                    <Icon className="w-[18px] h-[18px]" />
+                    {typeof tab.badge === 'number' && tab.badge > 0 && (
+                      <span className="absolute -top-1 -right-2 min-w-[14px] h-[14px] px-1 rounded-full bg-amber-500 text-white text-[9px] font-black flex items-center justify-center tabular-nums">
+                        {tab.badge}
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-[10px] leading-tight">{tab.label}</span>
+                </button>
+              );
+            })}
+          </nav>
         </div>
       </div>
 
@@ -908,11 +1052,15 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
         dose={incomingNotificationDose}
         isVisible={incomingNotificationDose !== null}
         onTake={(doseId) => {
-          handleTakeDoseWithFeedback(doseId);
+          if (incomingNotificationDose) {
+            handleTakeDoseWithFeedback(incomingNotificationDose);
+          } else {
+            onTakeDose(doseId);
+          }
           setIncomingNotificationDose(null);
         }}
         onSnooze={(doseId, minutes) => {
-          onSnoozeDose(doseId, minutes);
+          onSnoozeDose(doseId, minutes, incomingNotificationDose || undefined);
           setIncomingNotificationDose(null);
         }}
         onDismiss={() => setIncomingNotificationDose(null)}
@@ -923,13 +1071,21 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
         isOpen={snoozeDoseTarget !== null}
         dose={snoozeDoseTarget}
         onClose={() => setSnoozeDoseTarget(null)}
-        onSnooze={onSnoozeDose}
-        onTakeNow={handleTakeDoseWithFeedback}
+        onSnooze={(id, mins) => onSnoozeDose(id, mins, snoozeDoseTarget || undefined)}
+        onTakeNow={(id) => {
+          if (snoozeDoseTarget && snoozeDoseTarget.id === id) {
+            handleTakeDoseWithFeedback(snoozeDoseTarget);
+          } else {
+            onTakeDose(id);
+          }
+        }}
       />
 
       {/* Add Therapy Modal */}
       <AddTherapyModal
         isOpen={isAddTherapyOpen}
+        profiles={profiles}
+        defaultProfileId={activeProfileId}
         onClose={() => setIsAddTherapyOpen(false)}
         onSave={onAddTherapy}
       />
@@ -946,7 +1102,7 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
         }}
       />
 
-      {/* Drug Database Overlay - Przeszukiwanie bazy ponad 2700 leków w Polsce z dawkami i częstotliwością */}
+      {/* Drug Database Overlay */}
       <DrugDatabaseOverlay
         isOpen={isDrugDatabaseOpen}
         therapies={therapies}
@@ -960,26 +1116,26 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
 
       {/* Background Notification Diagnosis & Settings Modal */}
       {isBgDiagnosisOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+        <div className="fixed inset-0 z-50 bg-slate-900/75 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-teal-100 text-teal-800 flex items-center justify-center">
-                  <ShieldCheck className="w-5 h-5 text-teal-700" />
+                <div className="w-9 h-9 rounded-xl bg-teal-50 text-teal-700 flex items-center justify-center">
+                  <ShieldCheck className="w-5 h-5" />
                 </div>
                 <div>
                   <h3 className="text-base font-extrabold text-slate-900 leading-tight">
                     Działanie powiadomień w tle
                   </h3>
-                  <p className="text-2xs text-slate-500 font-medium">
-                    Dlaczego powiadomienia mogły nie dzwonić przy wyłączonej aplikacji?
+                  <p className="text-xs text-slate-500">
+                    Dlaczego alarmy dzwonią nawet przy zamkniętej aplikacji
                   </p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setIsBgDiagnosisOpen(false)}
-                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100"
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -989,66 +1145,58 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
               <div className="p-3 bg-teal-50 border border-teal-200 rounded-2xl text-teal-950 space-y-1">
                 <div className="font-bold flex items-center gap-1.5 text-teal-800">
                   <CheckCircle2 className="w-4 h-4 text-teal-600" />
-                  Naprawa w kodzie Flutter (rescheduleAllUpcomingDoses)
+                  Automatyczne planowanie dokładnych alarmów
                 </div>
-                <p className="text-2xs">
-                  Wcześniej aplikacja definiowała kanał powiadomień, ale nie wywoływała planowania dokładnych alarmów przy zapisywaniu leków do bazy SQLite. Teraz każda zmiana harmonogramu automatycznie przelicza i rejestruje alarmy w systemie Android.
+                <p className="text-xs">
+                  Każde dodanie leku lub przywrócenie kopii zapasowej wywołuje{' '}
+                  <code className="font-mono bg-white/80 px-1 rounded">rescheduleAllUpcomingDoses()</code>,
+                  rejestrując dokładne wybudzenia na kolejne 7 dni.
                 </p>
               </div>
 
               <div className="p-3 bg-amber-50 border border-amber-200 rounded-2xl text-amber-950 space-y-1.5">
                 <div className="font-bold flex items-center gap-1.5 text-amber-800">
                   <AlertCircle className="w-4 h-4 text-amber-600" />
-                  Kluczowe ustawienia systemu Android (Doze Mode):
+                  Ustawienia systemu Android (Doze Mode):
                 </div>
-                <ul className="text-2xs space-y-1.5 pl-2 list-disc list-inside">
+                <ul className="text-xs space-y-1 pl-2 list-disc list-inside">
                   <li>
-                    <span className="font-bold">Dokładne alarmy:</span> W Android 12, 13, 14 i nowszych aplikacja musi mieć przyznane uprawnienie "Alarmy i przypomnienia".
+                    <strong>Alarmy i przypomnienia:</strong> włączone dla MedPlaner w Android 12–15.
                   </li>
                   <li>
-                    <span className="font-bold">Samsung (OneUI):</span> Wejdź w Ustawienia &gt; Aplikacje &gt; MedPlaner &gt; Bateria &gt; Zmień z "Zoptymalizowano" na <strong>"Nieograniczone" (Unrestricted)</strong>.
+                    <strong>Samsung:</strong> Bateria &rarr; „Nieograniczone” (Unrestricted).
                   </li>
                   <li>
-                    <span className="font-bold">Xiaomi / POCO (MIUI / HyperOS):</span> Włącz <strong>"Autostart"</strong> oraz ustaw Oszczędzanie baterii na <strong>"Bez ograniczeń"</strong>.
-                  </li>
-                  <li>
-                    <span className="font-bold">Huawei (EMUI):</span> Uruchamianie aplikacji &gt; Wyłącz automatyczne, zaznacz <strong>"Działanie w tle"</strong>.
+                    <strong>Xiaomi / POCO:</strong> włącz „Autostart” i brak oszczędzania baterii.
                   </li>
                 </ul>
               </div>
 
-              <div className="p-3 bg-slate-100 rounded-2xl space-y-1">
-                <div className="font-bold text-slate-800">Test powiadomień w przeglądarce (Web Push):</div>
-                <p className="text-2xs text-slate-500">
-                  Możesz przetestować natywne powiadomienie z paska systemu klikając przycisk poniżej.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (typeof window !== 'undefined' && 'Notification' in window) {
-                      Notification.requestPermission().then((res) => {
-                        if (res === 'granted') {
-                          setWebNotificationAllowed(true);
-                          new Notification('🔔 MedPlaner: Powiadomienia włączone', {
-                            body: 'Alarmy będą pojawiać się w pasku systemowym urządzenia.',
-                          });
-                        }
-                      });
-                    }
-                  }}
-                  className="mt-2 w-full py-1.5 px-3 bg-white hover:bg-slate-200 border border-slate-300 rounded-xl text-2xs font-bold text-slate-800 flex items-center justify-center gap-1.5 shadow-2xs"
-                >
-                  <Volume2 className="w-3.5 h-3.5 text-teal-600" />
-                  Włącz powiadomienia w przeglądarce
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (typeof window !== 'undefined' && 'Notification' in window) {
+                    Notification.requestPermission().then((res) => {
+                      if (res === 'granted') {
+                        new Notification('MedPlaner: Powiadomienia włączone', {
+                          body: 'Alarmy będą pojawiać się w pasku systemowym urządzenia.',
+                        });
+                      }
+                    });
+                  }
+                }}
+                className="w-full py-2.5 px-3 bg-slate-100 hover:bg-slate-200 rounded-xl text-xs font-bold text-slate-800 flex items-center justify-center gap-1.5"
+              >
+                <Volume2 className="w-4 h-4 text-teal-700" />
+                Przetestuj powiadomienie systemowe w przeglądarce
+              </button>
             </div>
 
-            <div className="pt-2 flex justify-end gap-2 border-t border-slate-100">
+            <div className="pt-2 flex justify-end border-t border-slate-100">
               <button
                 type="button"
                 onClick={() => setIsBgDiagnosisOpen(false)}
-                className="px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white font-bold rounded-xl text-xs transition-colors"
+                className="px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white font-bold rounded-xl text-xs"
               >
                 Rozumiem
               </button>
@@ -1059,4 +1207,3 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
     </div>
   );
 };
-

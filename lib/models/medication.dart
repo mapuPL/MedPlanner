@@ -75,6 +75,10 @@ class Medication {
   final List<int> selectedDays;
   final DateTime startDate;
   final DateTime? endDate;
+  final double? stockQuantity;
+  final double? packageSize;
+  final double lowStockThreshold;
+  final DateTime? expiryDate;
 
   Medication({
     required this.id,
@@ -88,9 +92,15 @@ class Medication {
     this.selectedDays = const [],
     required this.startDate,
     this.endDate,
+    this.stockQuantity,
+    this.packageSize,
+    this.lowStockThreshold = 5,
+    this.expiryDate,
   });
 
   String formatDose() => '$doseAmount ${type.shortUnit}';
+
+  bool get isLowStock => stockQuantity != null && stockQuantity! <= lowStockThreshold;
 
   Map<String, dynamic> toMap() {
     return {
@@ -105,6 +115,10 @@ class Medication {
       'selected_days_json': jsonEncode(selectedDays),
       'start_date': startDate.toIso8601String().substring(0, 10),
       'end_date': endDate?.toIso8601String().substring(0, 10),
+      'stock_quantity': stockQuantity,
+      'package_size': packageSize,
+      'low_stock_threshold': lowStockThreshold,
+      'expiry_date': expiryDate?.toIso8601String().substring(0, 10),
     };
   }
 
@@ -135,6 +149,11 @@ class Medication {
       selectedDays: parsedDays,
       startDate: DateTime.parse(map['start_date'] as String),
       endDate: map['end_date'] != null ? DateTime.parse(map['end_date'] as String) : null,
+      stockQuantity: (map['stock_quantity'] as num?)?.toDouble(),
+      packageSize: (map['package_size'] as num?)?.toDouble(),
+      lowStockThreshold: (map['low_stock_threshold'] as num?)?.toDouble() ?? 5.0,
+      expiryDate: map['expiry_date'] != null ? DateTime.parse(map['expiry_date'] as String) : null,
     );
   }
 }
+

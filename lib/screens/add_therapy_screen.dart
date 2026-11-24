@@ -19,6 +19,14 @@ class _AddTherapyScreenState extends State<AddTherapyScreen> {
   DateTime _startDate = DateTime.now();
   DateTime? _endDate;
   String _selectedColor = '#10B981';
+  String _selectedProfile = 'Mój profil';
+
+  final List<String> _profileOptions = [
+    'Mój profil',
+    'Mama',
+    'Tata',
+    'Dziecko',
+  ];
 
   final List<String> _colorOptions = [
     '#10B981',
@@ -38,6 +46,7 @@ class _AddTherapyScreenState extends State<AddTherapyScreen> {
       _startDate = widget.therapyToEdit!.startDate;
       _endDate = widget.therapyToEdit!.endDate;
       _selectedColor = widget.therapyToEdit!.colorHex;
+      _selectedProfile = widget.therapyToEdit!.profileName;
     }
   }
 
@@ -57,6 +66,7 @@ class _AddTherapyScreenState extends State<AddTherapyScreen> {
       description: _descController.text.trim().isNotEmpty ? _descController.text.trim() : null,
       colorHex: _selectedColor,
       iconName: 'medical_services',
+      profileName: _selectedProfile,
       startDate: _startDate,
       endDate: _endDate,
       isActive: true,
@@ -89,6 +99,19 @@ class _AddTherapyScreenState extends State<AddTherapyScreen> {
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
+            DropdownButtonFormField<String>(
+              value: _profileOptions.contains(_selectedProfile) ? _selectedProfile : 'Mój profil',
+              decoration: const InputDecoration(
+                labelText: 'Profil osoby',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.person_outline),
+              ),
+              items: _profileOptions.map((p) => DropdownMenuItem(value: p, child: Text(p))).toList(),
+              onChanged: (v) {
+                if (v != null) setState(() => _selectedProfile = v);
+              },
+            ),
+            const SizedBox(height: 16),
             TextFormField(
               controller: _nameController,
               decoration: const InputDecoration(

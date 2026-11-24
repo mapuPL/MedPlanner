@@ -4,6 +4,7 @@ class Therapy {
   final String? description;
   final String colorHex;
   final String iconName;
+  final String profileName;
   final DateTime startDate;
   final DateTime? endDate;
   final bool isActive;
@@ -15,6 +16,7 @@ class Therapy {
     this.description,
     this.colorHex = '#10B981',
     this.iconName = 'medical_services',
+    this.profileName = 'Mój profil',
     required this.startDate,
     this.endDate,
     this.isActive = true,
@@ -28,6 +30,7 @@ class Therapy {
       'description': description,
       'color_hex': colorHex,
       'icon_name': iconName,
+      'profile_name': profileName,
       'start_date': startDate.toIso8601String().substring(0, 10),
       'end_date': endDate?.toIso8601String().substring(0, 10),
       'is_active': isActive ? 1 : 0,
@@ -42,6 +45,7 @@ class Therapy {
       description: map['description'] as String?,
       colorHex: (map['color_hex'] as String?) ?? '#10B981',
       iconName: (map['icon_name'] as String?) ?? 'medical_services',
+      profileName: (map['profile_name'] as String?) ?? 'Mój profil',
       startDate: DateTime.parse(map['start_date'] as String),
       endDate: map['end_date'] != null ? DateTime.parse(map['end_date'] as String) : null,
       isActive: (map['is_active'] as int) == 1,
@@ -49,3 +53,4 @@ class Therapy {
     );
   }
 }
+

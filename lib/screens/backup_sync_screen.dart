@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:share_plus/share_plus.dart';
 import '../services/google_drive_sync_service.dart';
 import '../services/database_service.dart';
 
@@ -18,6 +20,7 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
   bool _isSuccessMessage = true;
   bool _isDeveloperError = false;
   BackupInfo? _latestBackup;
+  List<LocalBackupCandidate> _detectedLocalBackups = [];
 
   @override
   void initState() {
@@ -27,6 +30,7 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
 
   Future<void> _checkInitialState() async {
     setState(() => _isLoading = true);
+    await _scanLocalBackups();
     await _syncService.signInSilently();
     if (_syncService.isSignedIn) {
       _latestBackup = await _syncService.getLatestBackupInfo();
@@ -34,6 +38,15 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
     if (mounted) {
       setState(() => _isLoading = false);
     }
+  }
+
+  Future<void> _scanLocalBackups() async {
+    try {
+      final found = await DatabaseService.instance.findExistingBackupCandidates();
+      if (mounted) {
+        setState(() => _detectedLocalBackups = found);
+      }
+    } catch (_) {}
   }
 
   Future<void> _handleSignIn() async {
@@ -159,26 +172,35 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
     }
   }
 
-  Future<void> _handleExportLocalBackup() async {
+  /// Eksport do publicznego folderu telefonu za pomocą systemowego okna "Zapisz jako" (SAF)
+  Future<void> _handleExportWithPicker() async {
     setState(() => _isLoading = true);
     try {
-      final file = await DatabaseService.instance.exportBackupFile();
-      final size = await file.length();
-      final sizeKb = (size / 1024).toStringAsFixed(1);
+      final exportResult = await DatabaseService.instance.exportBackupWithLocations();
+      final sizeKb = (exportResult.sizeBytes / 1024).toStringAsFixed(1);
+
+      String? savedUserPath;
+      try {
+        savedUserPath = await FilePicker.platform.saveFile(
+          dialogTitle: 'Zapisz kopię bazy MedPlaner (np. w Pobrane)',
+          fileName: DatabaseService.backupFileName,
+          bytes: exportResult.bytes,
+        );
+      } catch (_) {}
+
+      await _scanLocalBackups();
+
+      final finalLocation = savedUserPath ??
+          exportResult.publicDownloadPath ??
+          exportResult.primaryFile.path;
+
       setState(() {
-        _statusMessage = 'Wyeksportowano lokalną kopię: ${file.path} ($sizeKb KB). Plik bazy został bezpiecznie zapisany.';
+        _statusMessage = 'Zapisano kompletną kopię bazy ($sizeKb KB) w:\n$finalLocation\n\n'
+            'Plik przetrwa odinstalowanie aplikacji i będzie widoczny w aplikacji Pliki / Pobrane.';
         _isSuccessMessage = true;
         _isDeveloperError = false;
         _isLoading = false;
       });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Lokalna kopia zapasowa została utworzona pomyślnie.'),
-            backgroundColor: Colors.teal,
-          ),
-        );
-      }
     } catch (e) {
       setState(() {
         _statusMessage = 'Nie udało się wyeksportować bazy: $e';
@@ -188,20 +210,70 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
     }
   }
 
-  Future<void> _handleRestoreLocalBackup() async {
+  /// Udostępnienie pliku .db do dowolnej aplikacji (Dysk, Gmail, Pliki, Bluetooth)
+  Future<void> _handleShareBackup() async {
+    setState(() => _isLoading = true);
+    try {
+      final exportResult = await DatabaseService.instance.exportBackupWithLocations();
+      setState(() => _isLoading = false);
+
+      await Share.shareXFiles(
+        [XFile(exportResult.primaryFile.path, name: DatabaseService.backupFileName)],
+        subject: 'Kopia bazy leków MedPlaner (medplaner-backup.db)',
+        text: 'Kopia zapasowa bazy leków i terapii MedPlaner. Zachowaj ten plik, aby przywrócić dane po reinstalacji.',
+      );
+    } catch (e) {
+      setState(() {
+        _statusMessage = 'Nie udało się udostępnić pliku kopii: $e';
+        _isSuccessMessage = false;
+        _isLoading = false;
+      });
+    }
+  }
+
+  /// Wybór pliku .db z dowolnego miejsca na telefonie (Pobrane, Dysk, Dokumenty) po reinstalacji!
+  Future<void> _handlePickAndRestoreBackup() async {
+    try {
+      final picked = await FilePicker.platform.pickFiles(
+        dialogTitle: 'Wskaż plik kopii (medplaner-backup.db)',
+        type: FileType.any,
+      );
+
+      if (picked == null || picked.files.isEmpty) return;
+      final selectedPath = picked.files.single.path;
+      if (selectedPath == null) {
+        setState(() {
+          _statusMessage = 'Nie udało się odczytać ścieżki wybranego pliku.';
+          _isSuccessMessage = false;
+        });
+        return;
+      }
+
+      await _confirmAndRestorePath(selectedPath, picked.files.single.name);
+    } catch (e) {
+      setState(() {
+        _statusMessage = 'Błąd wyboru pliku kopii: $e';
+        _isSuccessMessage = false;
+      });
+    }
+  }
+
+  Future<void> _confirmAndRestorePath(String filePath, String displayName) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Przywrócić lokalną kopię?'),
-        content: const Text(
-          'Przywrócenie lokalnego pliku "medplaner-backup.db" nadpisze bieżącą bazę danych na telefonie.\n\nCzy chcesz kontynuować?',
+        title: const Text('Przywrócić wybraną kopię?'),
+        content: Text(
+          'Plik: "$displayName"\n\n'
+          'Przywrócenie tej kopii zastąpi obecne terapie i leki w nowo zainstalowanej aplikacji.\n\n'
+          'Czy chcesz kontynuować?',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Anuluj')),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Przywróć'),
+            child: const Text('Przywróć teraz'),
           ),
         ],
       ),
@@ -211,19 +283,18 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
 
     setState(() => _isLoading = true);
     try {
-      final file = await DatabaseService.instance.exportBackupFile();
-      final ok = await DatabaseService.instance.restoreFromBackupFile(file.path);
+      final ok = await DatabaseService.instance.restoreFromBackupFile(filePath);
       setState(() {
         _statusMessage = ok
-            ? 'Baza danych została pomyślnie przywrócona z lokalnego pliku.'
-            : 'Nie znaleziono pliku kopii "medplaner-backup.db".';
+            ? 'Baza danych została pomyślnie przywrócona z pliku:\n$filePath'
+            : 'Nie znaleziono wskazanego pliku kopii zapasowej.';
         _isSuccessMessage = ok;
         _isLoading = false;
       });
       if (mounted && ok) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Baza danych została zsynchronizowana z lokalnego pliku.'),
+            content: Text('Wszystkie terapie i leki zostały przywrócone!'),
             backgroundColor: Colors.teal,
           ),
         );
@@ -295,10 +366,8 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
                 ),
               ),
               const Text(
-                '5. W pole "Odcisk certyfikatu SHA-1" wklej odcisk z logów GitHub Actions (z sekcji "Odczytaj odciski certyfikatów SHA-1") '
-                'lub uruchom polecenie w katalogu projektu: ./gradlew signingReport.\n\n'
-                '6. Kliknij "Utwórz". Zmiany zaczną obowiązywać w ciągu kilku minut.\n\n'
-                'Wskazówka: Do tego czasu możesz natychmiast korzystać z opcji "Lokalna kopia zapasowa" poniżej!',
+                '5. W pole "Odcisk certyfikatu SHA-1" wklej odcisk z logów GitHub Actions (z sekcji "Odczytaj odciski certyfikatów SHA-1").\n\n'
+                'Wskazówka: Lokalna kopia w folderze Pobrane (poniżej) działa zawsze od razu bez Google Cloud!',
                 style: TextStyle(fontSize: 12, height: 1.4),
               ),
             ],
@@ -320,72 +389,27 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
     final user = _syncService.currentUser;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
+      backgroundColor: const Color(0xFFF4F7F7),
       appBar: AppBar(
-        title: const Text('Kopia zapasowa (Google Drive)', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text('Kopia Zapasowa i Przywracanie', style: TextStyle(fontWeight: FontWeight.bold)),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh, color: Colors.teal),
+            tooltip: 'Przeszukaj pamięć w poszukiwaniu kopii',
+            onPressed: _isLoading ? null : _scanLocalBackups,
+          ),
+        ],
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // Karta Edukacyjno-Prywatnościowa (Ochrona danych użytkownika)
-          Container(
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: Colors.teal.shade200),
-              boxShadow: [
-                BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8, offset: const Offset(0, 2)),
-              ],
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.teal.shade50,
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(Icons.shield_outlined, color: Colors.teal.shade800, size: 24),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        'Prywatność i bezpieczeństwo Twoich danych',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.teal.shade900,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                const Text(
-                  '1. MedPlaner działa w 100% lokalnie (offline) w pamięci Twojego urządzenia.\n'
-                  '2. Kopia zapasowa w chmurze jest całkowicie opcjonalna – korzystasz z niej tylko wtedy, gdy sam zdecydujesz.\n'
-                  '3. Twoja baza medyczna trafia WYŁĄCZNIE na Twój prywatny Dysk Google do dedykowanego folderu ("MedPlaner Kopia Zapasowa").\n'
-                  '4. Twórca aplikacji ani nikt inny NIE MA DOSTĘPU do Twoich danych – nie prowadzimy żadnego centralnego serwera.\n'
-                  '5. Aplikacja prosi tylko o bezpieczne uprawnienie "drive.file", co oznacza, że widzi wyłącznie utworzony przez siebie plik kopii ("medplaner-backup.db"). Nie ma dostępu do Twoich innych dokumentów, zdjęć czy poczty.',
-                  style: TextStyle(fontSize: 13, height: 1.5, color: Color(0xFF334155)),
-                ),
-              ],
-            ),
-          ),
-
-          const SizedBox(height: 20),
-
           // Komunikat o statusie operacji
           if (_statusMessage != null) ...[
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
                 color: _isSuccessMessage ? Colors.green.shade50 : (_isDeveloperError ? Colors.amber.shade50 : Colors.red.shade50),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(14),
                 border: Border.all(
                   color: _isSuccessMessage
                       ? Colors.green.shade300
@@ -423,21 +447,17 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
                   ),
                   if (_isDeveloperError) ...[
                     const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.amber.shade800,
-                            foregroundColor: Colors.white,
-                            visualDensity: VisualDensity.compact,
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
-                          icon: const Icon(Icons.help_outline, size: 16),
-                          label: const Text('Jak rozwiązać ten błąd? (Instrukcja SHA-1)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                          onPressed: _showSha1HelpDialog,
-                        ),
-                      ],
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.amber.shade800,
+                        foregroundColor: Colors.white,
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                      icon: const Icon(Icons.help_outline, size: 16),
+                      label: const Text('Jak rozwiązać ten błąd? (Instrukcja SHA-1)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      onPressed: _showSha1HelpDialog,
                     ),
                   ],
                 ],
@@ -446,11 +466,92 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
             const SizedBox(height: 16),
           ],
 
-          // Karta Autoryzacji Google
+          // KARTA 1: Automatycznie wykryte kopie na urządzeniu (po reinstalacji!)
+          if (_detectedLocalBackups.isNotEmpty) ...[
+            Card(
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(18),
+                side: BorderSide(color: Colors.teal.shade300, width: 1.5),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.find_in_page_outlined, color: Colors.teal.shade700, size: 22),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text(
+                            'Wykryto kopie zapasowe w pamięci telefonu',
+                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Nowo zainstalowana aplikacja automatycznie odnalazła poniższe pliki kopii bazy:',
+                      style: TextStyle(fontSize: 12, color: Color(0xFF475569)),
+                    ),
+                    const SizedBox(height: 10),
+                    ..._detectedLocalBackups.map((cand) {
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.teal.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.teal.shade100),
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    cand.locationLabel,
+                                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.teal.shade900),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    '${dateFormat.format(cand.modifiedAt)} • ${cand.formattedSize}',
+                                    style: TextStyle(fontSize: 11, color: Colors.teal.shade700),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.teal.shade700,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                              ),
+                              onPressed: _isLoading
+                                  ? null
+                                  : () => _confirmAndRestorePath(cand.path, cand.locationLabel),
+                              child: const Text('Przywróć', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+
+          // KARTA 2: Lokalna Kopia Zapasowa (Zapisz w Pobrane / Udostępnij / Wybierz plik z telefonu)
           Card(
             elevation: 0,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(18),
               side: BorderSide(color: Colors.grey.shade200),
             ),
             child: Padding(
@@ -458,14 +559,113 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Konto Google do synchronizacji', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.teal.shade50,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(Icons.save_alt, color: Colors.teal, size: 22),
+                      ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Kopia do pliku w Pobrane / Wybór ręczny',
+                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                            ),
+                            Text(
+                              'Przetrwa usunięcie aplikacji • bez logowania',
+                              style: TextStyle(color: Colors.grey, fontSize: 11),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                   const SizedBox(height: 12),
-                  if (user == null) ...[
-                    const Text(
-                      'Nie jesteś zalogowany. Zaloguj się, aby zapisać kopię bazy danych na swoim Dysku Google lub przywrócić ją po reinstalacji.',
-                      style: TextStyle(color: Colors.grey, fontSize: 13),
+                  const Text(
+                    'Zapisz plik "medplaner-backup.db" bezpośrednio do publicznego folderu Pobrane (Download), wyślij na Dyska/email lub wskaż dowolny zapisany wcześniej plik po ponownej instalacji.',
+                    style: TextStyle(fontSize: 12, height: 1.45, color: Color(0xFF475569)),
+                  ),
+                  const SizedBox(height: 14),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.teal.shade700,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      icon: const Icon(Icons.create_new_folder_outlined, size: 18),
+                      label: const Text('Zapisz kopię w Pobrane / Wybierz folder', style: TextStyle(fontWeight: FontWeight.bold)),
+                      onPressed: _isLoading ? null : _handleExportWithPicker,
                     ),
-                    const SizedBox(height: 16),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.teal.shade800,
+                            side: BorderSide(color: Colors.teal.shade300),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          icon: const Icon(Icons.share_outlined, size: 17),
+                          label: const Text('Udostępnij .db', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          onPressed: _isLoading ? null : _handleShareBackup,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.teal.shade800,
+                            side: BorderSide(color: Colors.teal.shade300),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          icon: const Icon(Icons.folder_open_outlined, size: 17),
+                          label: const Text('Wskaż plik .db', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          onPressed: _isLoading ? null : _handlePickAndRestoreBackup,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
+          // KARTA 3: Prywatność i Dysk Google
+          Card(
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+              side: BorderSide(color: Colors.grey.shade200),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Opcjonalna kopia na Dysku Google', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Twoja baza trafia wyłącznie do prywatnego folderu "MedPlaner Kopia Zapasowa" na Twoim Dysku Google (zakres drive.file). Żadne dane nie trafiają do twórcy aplikacji.',
+                    style: TextStyle(color: Color(0xFF475569), fontSize: 12, height: 1.4),
+                  ),
+                  const SizedBox(height: 14),
+                  if (user == null) ...[
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.white,
@@ -474,12 +674,7 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
                         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       ),
-                      icon: Image.network(
-                        'https://developers.google.com/identity/images/g-logo.png',
-                        width: 20,
-                        height: 20,
-                        errorBuilder: (_, __, ___) => const Icon(Icons.account_circle, color: Colors.blue),
-                      ),
+                      icon: const Icon(Icons.account_circle, color: Colors.teal),
                       label: const Text('Zaloguj przez Google', style: TextStyle(fontWeight: FontWeight.bold)),
                       onPressed: _isLoading ? null : _handleSignIn,
                     ),
@@ -499,7 +694,7 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(user.displayName ?? 'Użytkownik Google', style: const TextStyle(fontWeight: FontWeight.bold)),
-                              Text(user.email, style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+                              Text(user.email, style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
                             ],
                           ),
                         ),
@@ -509,196 +704,65 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
                         ),
                       ],
                     ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 16),
-
-          // Karta akcji: Kopia i Przywracanie
-          Card(
-            elevation: 0,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-              side: BorderSide(color: Colors.grey.shade200),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Kopia zapasowa w chmurze', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  if (_latestBackup != null) ...[
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.teal.shade50,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(Icons.cloud_done, color: Colors.teal.shade700, size: 24),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Ostatnia kopia: ${_latestBackup!.name}',
-                                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.teal.shade900),
-                                ),
-                                Text(
-                                  '${dateFormat.format(_latestBackup!.modifiedTime.toLocal())} • ${_latestBackup!.formattedSize}',
-                                  style: TextStyle(fontSize: 12, color: Colors.teal.shade700),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                  ] else if (user != null) ...[
-                    Text(
-                      'Brak zapisanej kopii zapasowej na Dysku Google.',
-                      style: TextStyle(fontSize: 13, color: Colors.grey.shade600, fontStyle: FontStyle.italic),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.teal,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          ),
-                          icon: _isLoading
-                              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                              : const Icon(Icons.cloud_upload_outlined),
-                          label: const Text('Zapisz kopię na Dysk'),
-                          onPressed: (_isLoading || user == null) ? null : _handleBackup,
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.teal,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          ),
-                          icon: const Icon(Icons.cloud_download_outlined),
-                          label: const Text('Przywróć z Dysku'),
-                          onPressed: (_isLoading || user == null) ? null : _handleRestore,
-                        ),
-                      ),
-                    ],
-                  ),
-                  if (user == null) ...[
-                    const SizedBox(height: 8),
-                    const Center(
-                      child: Text(
-                        'Zaloguj się powyżej, aby aktywować tworzenie i przywracanie kopii.',
-                        style: TextStyle(fontSize: 11, color: Colors.grey),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 16),
-
-          // Karta: Lokalna Kopia Zapasowa (Plik .db na telefonie - działa natychmiast)
-          Card(
-            elevation: 0,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-              side: BorderSide(color: Colors.teal.shade200),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
+                    const SizedBox(height: 12),
+                    if (_latestBackup != null) ...[
                       Container(
-                        padding: const EdgeInsets.all(6),
+                        padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
                           color: Colors.teal.shade50,
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: BorderRadius.circular(10),
                         ),
-                        child: const Icon(Icons.folder_zip_outlined, color: Colors.teal, size: 20),
-                      ),
-                      const SizedBox(width: 10),
-                      const Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                        child: Row(
                           children: [
-                            Text(
-                              'Lokalna kopia zapasowa (Bez logowania)',
-                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                            ),
-                            Text(
-                              'Zapis bezpośrednio do pliku w pamięci telefonu',
-                              style: TextStyle(color: Colors.grey, fontSize: 11),
+                            Icon(Icons.cloud_done, color: Colors.teal.shade700, size: 20),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                '${_latestBackup!.name} • ${dateFormat.format(_latestBackup!.modifiedTime.toLocal())} (${_latestBackup!.formattedSize})',
+                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.teal.shade900),
+                              ),
                             ),
                           ],
                         ),
                       ),
+                      const SizedBox(height: 12),
                     ],
-                  ),
-                  const SizedBox(height: 10),
-                  const Text(
-                    'Możesz w każdej chwili zrzucić pełną bazę "medications_catalog.db" do pliku '
-                    '"medplaner-backup.db" w pamięci urządzenia i przywrócić ją w razie potrzeby.',
-                    style: TextStyle(fontSize: 12, height: 1.4, color: Color(0xFF475569)),
-                  ),
-                  const SizedBox(height: 14),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.teal.shade800,
-                            side: BorderSide(color: Colors.teal.shade300),
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.teal,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                            icon: const Icon(Icons.cloud_upload_outlined, size: 18),
+                            label: const Text('Zapisz na Dysk', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            onPressed: _isLoading ? null : _handleBackup,
                           ),
-                          icon: const Icon(Icons.file_upload_outlined, size: 18),
-                          label: const Text('Eksportuj do pliku', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                          onPressed: _isLoading ? null : _handleExportLocalBackup,
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.teal.shade800,
-                            side: BorderSide(color: Colors.teal.shade300),
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.teal,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                            icon: const Icon(Icons.cloud_download_outlined, size: 18),
+                            label: const Text('Przywróć z Dysku', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            onPressed: _isLoading ? null : _handleRestore,
                           ),
-                          icon: const Icon(Icons.file_download_outlined, size: 18),
-                          label: const Text('Przywróć z pliku', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                          onPressed: _isLoading ? null : _handleRestoreLocalBackup,
                         ),
-                      ),
-                    ],
-                  ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 24),
         ],
       ),
     );

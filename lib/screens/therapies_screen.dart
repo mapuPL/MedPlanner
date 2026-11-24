@@ -201,9 +201,18 @@ class _TherapiesScreenState extends State<TherapiesScreen> {
                                 ),
                                 const SizedBox(width: 10),
                                 Expanded(
-                                  child: Text(
-                                    therapy.name,
-                                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        therapy.name,
+                                        style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                                      ),
+                                      Text(
+                                        'Profil: ${therapy.profileName}',
+                                        style: TextStyle(fontSize: 11, color: Colors.teal.shade700, fontWeight: FontWeight.w600),
+                                      ),
+                                    ],
                                   ),
                                 ),
                                 IconButton(

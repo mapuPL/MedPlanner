@@ -172,7 +172,7 @@ class GoogleDriveSyncService {
     return createdFolder.id!;
   }
 
-  /// Pobranie informacji o istniejącej kopii zapasowej
+  /// Pobranie informacji o najnowszej istniejącej kopii zapasowej
   Future<BackupInfo?> getLatestBackupInfo() async {
     final driveApi = await _getDriveApi();
     if (driveApi == null) return null;
@@ -182,6 +182,7 @@ class GoogleDriveSyncService {
       final fileList = await driveApi.files.list(
         q: query,
         spaces: 'drive',
+        orderBy: 'modifiedTime desc',
         $fields: 'files(id, name, modifiedTime, size)',
       );
 
@@ -210,15 +211,9 @@ class GoogleDriveSyncService {
     }
 
     try {
-      // 1. Zlokalizuj lokalną bazę SQLite
-      final dbPath = await DatabaseService.instance.getDatabaseFilePath();
-      final dbFile = File(dbPath);
-
-      if (!await dbFile.exists()) {
-        return SyncResult(success: false, message: 'Nie znaleziono lokalnego pliku bazy danych ($dbPath).');
-      }
-
-      final dbLength = await dbFile.length();
+      // 1. Zrzut dziennika WAL i pobranie spójnych bajtów bazy SQLite
+      final dbBytes = await DatabaseService.instance.getDatabaseBytesForExport();
+      final dbLength = dbBytes.length;
       if (dbLength == 0) {
         return SyncResult(success: false, message: 'Lokalna baza danych jest pusta.');
       }
@@ -230,7 +225,7 @@ class GoogleDriveSyncService {
       final query = "name = '$backupFileName' and '$folderId' in parents and trashed = false";
       final fileList = await driveApi.files.list(q: query, spaces: 'drive', $fields: 'files(id, name)');
 
-      final media = drive.Media(dbFile.openRead(), dbLength);
+      final media = drive.Media(Stream.fromIterable([dbBytes]), dbLength);
       drive.File uploadedFile;
 
       if (fileList.files != null && fileList.files!.isNotEmpty) {
@@ -286,11 +281,12 @@ class GoogleDriveSyncService {
     }
 
     try {
-      // 1. Wyszukaj plik kopii zapasowej
+      // 1. Wyszukaj najnowszy plik kopii zapasowej (najpierw w dedykowanym folderze, a w razie potrzeby na całym Dysku)
       final query = "name = '$backupFileName' and trashed = false";
       final fileList = await driveApi.files.list(
         q: query,
         spaces: 'drive',
+        orderBy: 'modifiedTime desc',
         $fields: 'files(id, name, modifiedTime, size)',
       );
 
@@ -315,28 +311,41 @@ class GoogleDriveSyncService {
         bytes.addAll(chunk);
       }
 
-      if (bytes.isEmpty) {
-        return SyncResult(success: false, message: 'Pobrany plik kopii zapasowej jest pusty.');
+      if (!DatabaseService.isValidSqliteBytes(bytes)) {
+        return SyncResult(
+          success: false,
+          message: 'Pobrany plik z Dysku Google nie jest prawidłową bazą SQLite aplikacji MedPlaner.',
+        );
       }
 
-      // 3. Bezpieczne zamknięcie obecnej instancji SQLite przed nadpisaniem
+      // 3. Bezpieczne zamknięcie obecnej instancji SQLite i usunięcie plików dziennika WAL
       await DatabaseService.instance.closeDatabase();
 
       // 4. Nadpisanie lokalnego pliku bazy medications_catalog.db
       final dbPath = await DatabaseService.instance.getDatabaseFilePath();
       final dbFile = File(dbPath);
 
-      // Kopia bezpieczeństwa przed nadpisaniem
       if (await dbFile.exists()) {
         try {
           await dbFile.copy('$dbPath.bak');
         } catch (_) {}
       }
 
+      for (final suffix in ['-wal', '-shm', '-journal']) {
+        final aux = File('$dbPath$suffix');
+        if (await aux.exists()) {
+          try {
+            await aux.delete();
+          } catch (_) {}
+        }
+      }
+
       await dbFile.writeAsBytes(bytes, flush: true);
 
-      // 5. Ponowne zainicjalizowanie i otwarcie bazy SQLite
+      // 5. Ponowne zainicjalizowanie bazy SQLite i przeplanowanie powiadomień
       await DatabaseService.instance.reloadDatabase();
+      await NotificationService.instance.rescheduleAllUpcomingDoses();
+
 
       final info = BackupInfo(
         id: fileId,
@@ -352,7 +361,6 @@ class GoogleDriveSyncService {
       );
     } catch (e) {
       debugPrint('Błąd przywracania bazy danych z Google Drive: $e');
-      // Próba przywrócenia z pliku .bak w razie awarii
       try {
         final dbPath = await DatabaseService.instance.getDatabaseFilePath();
         final bakFile = File('$dbPath.bak');
@@ -361,6 +369,7 @@ class GoogleDriveSyncService {
           await DatabaseService.instance.reloadDatabase();
         }
       } catch (_) {}
+
 
       return SyncResult(
         success: false,

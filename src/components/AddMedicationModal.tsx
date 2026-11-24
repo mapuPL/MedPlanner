@@ -39,6 +39,8 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
   const [selectedDays, setSelectedDays] = useState<number[]>([1, 2, 3, 4, 5, 6, 7]);
   const [startDate, setStartDate] = useState(new Date().toISOString().substring(0, 10));
   const [endDate, setEndDate] = useState('');
+  const [packageSize, setPackageSize] = useState('30');
+  const [expiryDate, setExpiryDate] = useState('');
   const [error, setError] = useState('');
 
   // Stan wyszukiwarki leków w rejestrze URPL
@@ -171,8 +173,13 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
       return;
     }
 
+    const parsedPkg = parseFloat(packageSize.replace(',', '.'));
+    const validPkg = Number.isFinite(parsedPkg) && parsedPkg > 0 ? parsedPkg : undefined;
+    const selectedTherapy = therapies.find((t) => t.id === therapyId);
+
     onSave({
       therapyId,
+      profileId: selectedTherapy?.profileId || 'self',
       name: name.trim(),
       type,
       doseAmount: doseAmount.trim(),
@@ -182,6 +189,10 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
       selectedDays: scheduleType === 'specific_days' ? selectedDays : undefined,
       startDate,
       endDate: scheduleType === 'date_range' && endDate ? endDate : undefined,
+      packageSize: validPkg,
+      stockQuantity: validPkg,
+      lowStockThreshold: validPkg ? Math.max(3, Math.round(validPkg * 0.15)) : 5,
+      expiryDate: expiryDate || undefined,
     });
 
     onClose();
@@ -409,6 +420,37 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
               placeholder="np. Po posiłku, Popić pełną szklanką wody, Na czczo"
               className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:border-teal-500 text-sm"
             />
+          </div>
+
+          {/* Domowa Apteczka: stan opakowania i termin ważności */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 rounded-xl bg-teal-50/50 border border-teal-200/70">
+            <div>
+              <label htmlFor="med-package-size" className="block text-xs font-bold text-slate-700 mb-1">
+                Stan opakowania ({currentUnit})
+              </label>
+              <input
+                id="med-package-size"
+                type="number"
+                min="1"
+                step="1"
+                value={packageSize}
+                onChange={(e) => setPackageSize(e.target.value)}
+                placeholder="np. 30"
+                className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white text-slate-900 text-sm font-semibold tabular-nums focus:outline-hidden focus:ring-2 focus:ring-teal-500"
+              />
+            </div>
+            <div>
+              <label htmlFor="med-expiry-date" className="block text-xs font-bold text-slate-700 mb-1">
+                Termin ważności (opcjonalnie)
+              </label>
+              <input
+                id="med-expiry-date"
+                type="date"
+                value={expiryDate}
+                onChange={(e) => setExpiryDate(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white text-slate-900 text-sm focus:outline-hidden focus:ring-2 focus:ring-teal-500"
+              />
+            </div>
           </div>
 
           {/* Elastyczne pory i godziny dawkowania */}

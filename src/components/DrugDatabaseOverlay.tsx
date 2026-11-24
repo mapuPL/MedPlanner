@@ -55,6 +55,8 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
   const [instructions, setInstructions] = useState<string>('');
   const [startDate, setStartDate] = useState<string>(new Date().toISOString().substring(0, 10));
   const [endDate, setEndDate] = useState<string>('');
+  const [packageSize, setPackageSize] = useState<string>('30');
+  const [expiryDate, setExpiryDate] = useState<string>('');
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
 
   // Tryb "Koło ratunkowe" - dodawanie własnego leku
@@ -191,8 +193,13 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
     else if (dosageUnit.includes('aplik') || dosageUnit.includes('zastrzyk')) medType = 'application';
     else if (dosageUnit.includes('kaps')) medType = 'capsule';
 
+    const parsedPkg = parseFloat(packageSize.replace(',', '.'));
+    const validPkg = Number.isFinite(parsedPkg) && parsedPkg > 0 ? parsedPkg : undefined;
+    const selectedTherapy = therapies.find((t) => t.id === targetTherapyId);
+
     const newMedication: Omit<Medication, 'id'> = {
       therapyId: targetTherapyId,
+      profileId: selectedTherapy?.profileId || 'self',
       name: selectedMed.name,
       type: medType,
       doseAmount: `${doseAmount} ${dosageUnit}`.trim(),
@@ -202,6 +209,10 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
       selectedDays: [1, 2, 3, 4, 5, 6, 7],
       startDate: startDate || new Date().toISOString().substring(0, 10),
       endDate: endDate || undefined,
+      packageSize: validPkg,
+      stockQuantity: validPkg,
+      lowStockThreshold: validPkg ? Math.max(3, Math.round(validPkg * 0.15)) : 5,
+      expiryDate: expiryDate || undefined,
     };
 
     onAddMedicationToTherapy(newMedication);
@@ -646,6 +657,34 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
                       placeholder="np. W trakcie posiłku, popić szklanką wody"
                       className="w-full px-3 py-2 bg-white rounded-xl border border-slate-300 text-xs text-slate-900 focus:border-teal-600 focus:outline-hidden"
                     />
+                  </div>
+
+                  {/* 5. Domowa Apteczka: wielkość opakowania i termin ważności */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-2xs font-bold text-slate-700 mb-1">
+                        Ilość w opakowaniu
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={packageSize}
+                        onChange={(e) => setPackageSize(e.target.value)}
+                        placeholder="np. 30"
+                        className="w-full px-3 py-2 bg-white rounded-xl border border-slate-300 text-xs text-slate-900 font-bold tabular-nums focus:border-teal-600 focus:outline-hidden"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-2xs font-bold text-slate-700 mb-1">
+                        Termin ważności
+                      </label>
+                      <input
+                        type="date"
+                        value={expiryDate}
+                        onChange={(e) => setExpiryDate(e.target.value)}
+                        className="w-full px-3 py-2 bg-white rounded-xl border border-slate-300 text-xs text-slate-900 focus:border-teal-600 focus:outline-hidden"
+                      />
+                    </div>
                   </div>
 
                   {/* Przycisk akcji */}

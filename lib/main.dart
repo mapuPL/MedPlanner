@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'screens/home_screen.dart';
 import 'screens/calendar_screen.dart';
+import 'screens/cabinet_screen.dart';
 import 'screens/therapies_screen.dart';
 import 'screens/backup_sync_screen.dart';
 import 'services/database_service.dart';
@@ -28,6 +29,7 @@ class MedPlanerApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
+        scaffoldBackgroundColor: const Color(0xFFF4F7F7),
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0F766E)),
       ),
       home: const MainShell(),
@@ -47,6 +49,7 @@ class _MainShellState extends State<MainShell> {
   final List<Widget> _screens = const [
     HomeScreen(),
     CalendarScreen(),
+    CabinetScreen(),
     TherapiesScreen(),
     BackupSyncScreen(),
   ];
@@ -61,8 +64,9 @@ class _MainShellState extends State<MainShell> {
         destinations: const [
           NavigationDestination(icon: Icon(Icons.today), label: 'Dziś'),
           NavigationDestination(icon: Icon(Icons.calendar_month), label: 'Kalendarz'),
+          NavigationDestination(icon: Icon(Icons.inventory_2_outlined), label: 'Apteczka'),
           NavigationDestination(icon: Icon(Icons.healing), label: 'Terapie'),
-          NavigationDestination(icon: Icon(Icons.cloud_sync_outlined), label: 'Kopia & Dysk'),
+          NavigationDestination(icon: Icon(Icons.cloud_sync_outlined), label: 'Kopia'),
         ],
       ),
     );

@@ -7,17 +7,49 @@ import {
   sortDosesChronologically,
   calculateCompliance,
   isTherapyCompletedForDate,
+  parseNumericDose,
+  evaluateCabinetStatus,
   Medication,
   DoseItem
 } from './medicationLogic.ts';
 
-test('formatDoseDisplay formats units properly in Polish', () => {
+test('formatDoseDisplay formats units properly in Polish without duplication', () => {
   assert.equal(formatDoseDisplay('2', 'capsule'), '2 tabl.');
   assert.equal(formatDoseDisplay('10', 'drops'), '10 kropli');
   assert.equal(formatDoseDisplay('5', 'ml'), '5 ml');
   assert.equal(formatDoseDisplay('1', 'inhaler'), '1 wziew');
   assert.equal(formatDoseDisplay('2', 'application'), '2 aplik.');
   assert.equal(formatDoseDisplay('1', 'other'), '1 dawka');
+  assert.equal(formatDoseDisplay('1 tabl. powlekana', 'capsule'), '1 tabl. powlekana');
+});
+
+test('parseNumericDose extracts quantity consumed per dose', () => {
+  assert.equal(parseNumericDose('2'), 2);
+  assert.equal(parseNumericDose('1.5'), 1.5);
+  assert.equal(parseNumericDose('2,5 ml'), 2.5);
+  assert.equal(parseNumericDose('1 tabl. powlekana'), 1);
+});
+
+test('evaluateCabinetStatus detects expired, expiring soon, and low stock medications', () => {
+  const baseMed: Medication = {
+    id: 'm1',
+    therapyId: 't1',
+    name: 'Amotaks',
+    type: 'capsule',
+    doseAmount: '1',
+    times: ['08:00'],
+    scheduleType: 'daily',
+    startDate: '2026-01-01',
+    packageSize: 20,
+    stockQuantity: 15,
+    lowStockThreshold: 5,
+    expiryDate: '2026-12-31',
+  };
+
+  assert.equal(evaluateCabinetStatus(baseMed, '2026-06-01').status, 'ok');
+  assert.equal(evaluateCabinetStatus({ ...baseMed, stockQuantity: 4 }, '2026-06-01').status, 'low_stock');
+  assert.equal(evaluateCabinetStatus({ ...baseMed, expiryDate: '2026-06-20' }, '2026-06-01').status, 'expiring_soon');
+  assert.equal(evaluateCabinetStatus({ ...baseMed, expiryDate: '2026-05-15' }, '2026-06-01').status, 'expired');
 });
 
 test('calculateSnoozeTime calculates future snooze time correctly', () => {

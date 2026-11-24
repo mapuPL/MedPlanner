@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
-import { X, Check, Palette } from 'lucide-react';
-import { Therapy } from '../utils/medicationLogic';
+import { X, Check, Palette, Users } from 'lucide-react';
+import { Therapy, FamilyProfile } from '../utils/medicationLogic';
 
 interface AddTherapyModalProps {
   isOpen: boolean;
+  profiles?: FamilyProfile[];
+  defaultProfileId?: string;
   onClose: () => void;
   onSave: (therapy: Omit<Therapy, 'id' | 'createdAt'>) => void;
 }
@@ -17,10 +19,17 @@ const COLOR_OPTIONS = [
   { hex: '#ef4444', label: 'Koralowy' },
 ];
 
-export const AddTherapyModal: React.FC<AddTherapyModalProps> = ({ isOpen, onClose, onSave }) => {
+export const AddTherapyModal: React.FC<AddTherapyModalProps> = ({
+  isOpen,
+  profiles = [],
+  defaultProfileId = 'self',
+  onClose,
+  onSave,
+}) => {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [color, setColor] = useState('#10b981');
+  const [profileId, setProfileId] = useState(defaultProfileId === 'all' ? 'self' : defaultProfileId);
   const [error, setError] = useState('');
 
   if (!isOpen) return null;
@@ -38,6 +47,7 @@ export const AddTherapyModal: React.FC<AddTherapyModalProps> = ({ isOpen, onClos
       description: description.trim() || undefined,
       color,
       icon: 'medical_services',
+      profileId: profileId || 'self',
       startDate: todayStr,
       isActive: true,
     });
@@ -110,6 +120,26 @@ export const AddTherapyModal: React.FC<AddTherapyModalProps> = ({ isOpen, onClos
               className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:border-teal-500 text-sm resize-none"
             />
           </div>
+
+          {profiles.length > 0 && (
+            <div>
+              <label htmlFor="therapy-profile" className="block text-sm font-semibold text-slate-700 mb-1 flex items-center gap-1.5">
+                <Users className="w-4 h-4 text-slate-500" /> Profil osoby
+              </label>
+              <select
+                id="therapy-profile"
+                value={profileId}
+                onChange={(e) => setProfileId(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-slate-900 bg-white focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:border-teal-500 text-sm"
+              >
+                {profiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.relation})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-semibold text-slate-700 mb-2 flex items-center gap-1.5">
