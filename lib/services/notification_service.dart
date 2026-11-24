@@ -2,6 +2,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/data/latest_all.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 import 'package:flutter_timezone/flutter_timezone.dart';
+import '../models/dose_log.dart';
 import 'database_service.dart';
 
 class NotificationService {
@@ -156,10 +157,10 @@ class NotificationService {
         final doses = await DatabaseService.instance.getDosesForDate(targetDate);
 
         for (final dose in doses) {
-          if (dose.status == 'taken' || dose.status == 'skipped') continue;
+          if (dose.status == DoseStatus.taken || dose.status == DoseStatus.skipped) continue;
 
           DateTime scheduledAt;
-          if (dose.status == 'snoozed' && dose.snoozedUntil != null) {
+          if (dose.status == DoseStatus.snoozed && dose.snoozedUntil != null) {
             final parts = dose.snoozedUntil!.split(':');
             if (parts.length >= 2) {
               scheduledAt = DateTime(

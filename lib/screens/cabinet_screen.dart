@@ -176,7 +176,10 @@ class _CabinetScreenState extends State<CabinetScreen> {
                   itemCount: displayed.length,
                   itemBuilder: (ctx, idx) {
                     final med = displayed[idx];
-                    final therapy = _therapies.where((t) => t.id == med.therapyId).firstOrNull;
+                    final therapy = _therapies.cast<Therapy?>().firstWhere(
+                          (t) => t?.id == med.therapyId,
+                          orElse: () => null,
+                        );
                     final pkg = med.packageSize ?? (med.stockQuantity ?? 30.0);
                     final stock = med.stockQuantity;
                     final ratio = (stock != null && pkg > 0) ? (stock / pkg).clamp(0.0, 1.0) : 1.0;
