@@ -23,8 +23,8 @@ class NotificationService {
   Future<void> initialize({Function(String doseId)? onDoseTaken}) async {
     tz.initializeTimeZones();
     try {
-      final String timeZoneName = await FlutterTimezone.getLocalTimezone();
-      tz.setLocalLocation(tz.getLocation(timeZoneName));
+      final TimezoneInfo currentTimeZone = await FlutterTimezone.getLocalTimezone();
+      tz.setLocalLocation(tz.getLocation(currentTimeZone.identifier));
     } catch (_) {
       tz.setLocalLocation(tz.getLocation('Europe/Warsaw'));
     }

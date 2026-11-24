@@ -181,7 +181,7 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
 
       String? savedUserPath;
       try {
-        savedUserPath = await FilePicker.platform.saveFile(
+        savedUserPath = await FilePicker.saveFile(
           dialogTitle: 'Zapisz kopię bazy MedPlaner (np. w Pobrane)',
           fileName: DatabaseService.backupFileName,
           bytes: exportResult.bytes,
@@ -217,10 +217,12 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
       final exportResult = await DatabaseService.instance.exportBackupWithLocations();
       setState(() => _isLoading = false);
 
-      await Share.shareXFiles(
-        [XFile(exportResult.primaryFile.path, name: DatabaseService.backupFileName)],
-        subject: 'Kopia bazy leków MedPlaner (medplaner-backup.db)',
-        text: 'Kopia zapasowa bazy leków i terapii MedPlaner. Zachowaj ten plik, aby przywrócić dane po reinstalacji.',
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(exportResult.primaryFile.path, name: DatabaseService.backupFileName)],
+          subject: 'Kopia bazy leków MedPlaner (medplaner-backup.db)',
+          text: 'Kopia zapasowa bazy leków i terapii MedPlaner. Zachowaj ten plik, aby przywrócić dane po reinstalacji.',
+        ),
       );
     } catch (e) {
       setState(() {
@@ -234,7 +236,7 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
   /// Wybór pliku .db z dowolnego miejsca na telefonie (Pobrane, Dysk, Dokumenty) po reinstalacji!
   Future<void> _handlePickAndRestoreBackup() async {
     try {
-      final picked = await FilePicker.platform.pickFiles(
+      final picked = await FilePicker.pickFiles(
         dialogTitle: 'Wskaż plik kopii (medplaner-backup.db)',
         type: FileType.any,
       );
