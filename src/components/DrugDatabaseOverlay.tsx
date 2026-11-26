@@ -25,7 +25,7 @@ import {
   getDefaultFrequencyForMedicine,
   getDosageUnitLabel
 } from '../data/polishMedicationsRegistry';
-import { Therapy, Medication, MedicationType, ScheduleType, MEDICATION_TYPE_LABELS } from '../utils/medicationLogic';
+import { Therapy, Medication, MedicationType, ScheduleType, MEDICATION_TYPE_LABELS, formatLocalDate } from '../utils/medicationLogic';
 
 interface DrugDatabaseOverlayProps {
   isOpen: boolean;
@@ -53,7 +53,7 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
   const [selectedFreqId, setSelectedFreqId] = useState<string>('1x_rano');
   const [times, setTimes] = useState<string[]>(['08:00']);
   const [instructions, setInstructions] = useState<string>('');
-  const [startDate, setStartDate] = useState<string>(new Date().toISOString().substring(0, 10));
+  const [startDate, setStartDate] = useState<string>(formatLocalDate());
   const [endDate, setEndDate] = useState<string>('');
   const [packageSize, setPackageSize] = useState<string>('30');
   const [expiryDate, setExpiryDate] = useState<string>('');
@@ -207,7 +207,7 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
       times: times.length > 0 ? times : ['08:00'],
       scheduleType: endDate ? 'date_range' : 'daily',
       selectedDays: [1, 2, 3, 4, 5, 6, 7],
-      startDate: startDate || new Date().toISOString().substring(0, 10),
+      startDate: startDate || formatLocalDate(),
       endDate: endDate || undefined,
       packageSize: validPkg,
       stockQuantity: validPkg,

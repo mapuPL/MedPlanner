@@ -13,8 +13,10 @@ void main() async {
   await initializeDateFormatting('pl_PL', null);
 
   await DatabaseService.instance.database;
-  await NotificationService.instance.initialize();
-  await NotificationService.instance.rescheduleAllUpcomingDoses();
+  try {
+    await NotificationService.instance.initialize();
+    await NotificationService.instance.rescheduleAllUpcomingDoses();
+  } catch (_) {}
 
   runApp(const MedPlanerApp());
 }
@@ -57,7 +59,7 @@ class _MainShellState extends State<MainShell> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: _screens[_idx],
+      body: IndexedStack(index: _idx, children: _screens),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _idx,
         onDestinationSelected: (i) => setState(() => _idx = i),

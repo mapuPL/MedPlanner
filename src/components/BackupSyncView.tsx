@@ -13,7 +13,7 @@ import {
   Database,
   FolderSearch,
 } from 'lucide-react';
-import { Therapy, Medication, DoseItem, FamilyProfile } from '../utils/medicationLogic';
+import { Therapy, Medication, DoseItem, FamilyProfile, formatLocalDate } from '../utils/medicationLogic';
 
 export interface MedPlanerBackupPayload {
   app: 'MedPlaner';
@@ -123,7 +123,7 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
     const json = JSON.stringify(payload, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
-    const dateStamp = new Date().toISOString().substring(0, 10);
+    const dateStamp = formatLocalDate();
     const filename = `medplaner-backup-${dateStamp}.json`;
 
     const a = document.createElement('a');

@@ -101,11 +101,30 @@ export function parseNumericDose(amount: string): number {
   return Number.isFinite(num) && num > 0 ? num : 1;
 }
 
+/**
+ * Format local calendar date as YYYY-MM-DD without UTC timezone shift
+ */
+export function formatLocalDate(date: Date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+/**
+ * Add (or subtract) calendar days to a YYYY-MM-DD string safely via UTC noon
+ */
+export function addDaysToDateStr(dateStr: string, offsetDays: number): string {
+  const d = new Date(`${dateStr}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + offsetDays);
+  return d.toISOString().substring(0, 10);
+}
+
 export type CabinetAlertStatus = 'ok' | 'low_stock' | 'expiring_soon' | 'expired';
 
 export function evaluateCabinetStatus(
   medication: Medication,
-  referenceDateStr: string = new Date().toISOString().substring(0, 10)
+  referenceDateStr: string = formatLocalDate()
 ): {
   status: CabinetAlertStatus;
   daysUntilExpiry: number | null;

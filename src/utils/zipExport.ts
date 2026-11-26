@@ -6,7 +6,11 @@ export async function downloadFlutterProjectZip(): Promise<void> {
 
   // Dodaj wszystkie pliki projektu do archiwum zip
   for (const file of FLUTTER_PROJECT_FILES) {
-    zip.file(file.path, file.content);
+    zip.file(
+      file.path,
+      file.content,
+      file.isBase64 ? { base64: true } : undefined
+    );
   }
 
   // Wygeneruj plik zip jako blob

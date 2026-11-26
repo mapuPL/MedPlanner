@@ -102,6 +102,9 @@ class Medication {
 
   bool get isLowStock => stockQuantity != null && stockQuantity! <= lowStockThreshold;
 
+  static String _formatYmd(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
   Map<String, dynamic> toMap() {
     return {
       'id': id,
@@ -113,12 +116,12 @@ class Medication {
       'times_json': jsonEncode(times),
       'schedule_type': scheduleType.name,
       'selected_days_json': jsonEncode(selectedDays),
-      'start_date': startDate.toIso8601String().substring(0, 10),
-      'end_date': endDate?.toIso8601String().substring(0, 10),
+      'start_date': _formatYmd(startDate),
+      'end_date': endDate != null ? _formatYmd(endDate!) : null,
       'stock_quantity': stockQuantity,
       'package_size': packageSize,
       'low_stock_threshold': lowStockThreshold,
-      'expiry_date': expiryDate?.toIso8601String().substring(0, 10),
+      'expiry_date': expiryDate != null ? _formatYmd(expiryDate!) : null,
     };
   }
 

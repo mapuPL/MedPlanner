@@ -7,7 +7,9 @@ import '../services/medication_registry_service.dart';
 import 'add_therapy_screen.dart';
 
 class AddMedicationScreen extends StatefulWidget {
-  const AddMedicationScreen({super.key});
+  final String? initialTherapyId;
+
+  const AddMedicationScreen({super.key, this.initialTherapyId});
 
   @override
   State<AddMedicationScreen> createState() => _AddMedicationScreenState();
@@ -20,6 +22,8 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
   final _instructionsController = TextEditingController();
   final _packageSizeController = TextEditingController(text: '30');
   DateTime? _expiryDate;
+  DateTime _startDate = DateTime.now();
+  DateTime? _endDate;
 
   List<Therapy> _therapies = [];
   String? _selectedTherapyId;
@@ -56,10 +60,19 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
 
   Future<void> _loadTherapies() async {
     final list = await DatabaseService.instance.getTherapies(activeOnly: true);
+    if (!mounted) return;
     setState(() {
       _therapies = list;
-      if (list.isNotEmpty && _selectedTherapyId == null) {
-        _selectedTherapyId = list.first.id;
+      if (list.isNotEmpty) {
+        if (widget.initialTherapyId != null &&
+            list.any((t) => t.id == widget.initialTherapyId) &&
+            _selectedTherapyId == null) {
+          _selectedTherapyId = widget.initialTherapyId;
+        } else if (_selectedTherapyId == null || !list.any((t) => t.id == _selectedTherapyId)) {
+          _selectedTherapyId = list.first.id;
+        }
+      } else {
+        _selectedTherapyId = null;
       }
     });
   }
@@ -119,6 +132,15 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
       helpText: 'WYBIERZ DOKŁADNĄ GODZINĘ DAWKI',
     );
     if (picked != null) {
+      final exists = _selectedTimes.any((t) => t.hour == picked.hour && t.minute == picked.minute);
+      if (exists) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Ta godzina jest już na liście')),
+          );
+        }
+        return;
+      }
       setState(() {
         _selectedTimes.add(picked);
         _selectedTimes.sort((a, b) => (a.hour * 60 + a.minute).compareTo(b.hour * 60 + b.minute));
@@ -140,6 +162,12 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
       );
       return;
     }
+    if (_selectedSchedule == ScheduleType.specificDays && _selectedDays.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Wybierz przynajmniej jeden dzień tygodnia!')),
+      );
+      return;
+    }
 
     final formattedTimes = _selectedTimes.map((t) {
       final h = t.hour.toString().padLeft(2, '0');
@@ -148,6 +176,10 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
     }).toList();
 
     final parsedPkg = double.tryParse(_packageSizeController.text.replaceAll(',', '.'));
+    final normalizedStart = DateTime(_startDate.year, _startDate.month, _startDate.day);
+    final normalizedEnd = (_selectedSchedule == ScheduleType.dateRange && _endDate != null)
+        ? DateTime(_endDate!.year, _endDate!.month, _endDate!.day)
+        : null;
 
     final med = Medication(
       id: const Uuid().v4(),
@@ -158,8 +190,9 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
       instructions: _instructionsController.text.trim().isNotEmpty ? _instructionsController.text.trim() : null,
       times: formattedTimes,
       scheduleType: _selectedSchedule,
-      selectedDays: _selectedDays,
-      startDate: DateTime.now(),
+      selectedDays: _selectedSchedule == ScheduleType.specificDays ? List<int>.from(_selectedDays) : const [],
+      startDate: normalizedStart,
+      endDate: normalizedEnd,
       packageSize: parsedPkg,
       stockQuantity: parsedPkg,
       lowStockThreshold: parsedPkg != null ? (parsedPkg * 0.15).clamp(3, 15) : 5,
@@ -290,7 +323,7 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
                   border: Border.all(color: Colors.teal.shade100),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.06),
+                      color: Colors.black.withAlpha(15),
                       blurRadius: 8,
                       offset: const Offset(0, 3),
                     ),
@@ -477,6 +510,108 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
                 );
               }).toList(),
             ),
+            const SizedBox(height: 20),
+            const Text('Harmonogram dawkowania', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            SegmentedButton<ScheduleType>(
+              segments: const [
+                ButtonSegment(value: ScheduleType.daily, label: Text('Codziennie', style: TextStyle(fontSize: 12))),
+                ButtonSegment(value: ScheduleType.specificDays, label: Text('Dni tyg.', style: TextStyle(fontSize: 12))),
+                ButtonSegment(value: ScheduleType.dateRange, label: Text('Okres', style: TextStyle(fontSize: 12))),
+              ],
+              selected: {_selectedSchedule},
+              onSelectionChanged: (sel) => setState(() => _selectedSchedule = sel.first),
+            ),
+            if (_selectedSchedule == ScheduleType.specificDays) ...[
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: const [
+                  MapEntry(1, 'Pn'),
+                  MapEntry(2, 'Wt'),
+                  MapEntry(3, 'Śr'),
+                  MapEntry(4, 'Cz'),
+                  MapEntry(5, 'Pt'),
+                  MapEntry(6, 'Sb'),
+                  MapEntry(7, 'Nd'),
+                ].map((entry) {
+                  final selected = _selectedDays.contains(entry.key);
+                  return FilterChip(
+                    label: Text(entry.value, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    selected: selected,
+                    selectedColor: Colors.teal.shade100,
+                    onSelected: (val) {
+                      setState(() {
+                        if (val) {
+                          if (!_selectedDays.contains(entry.key)) {
+                            _selectedDays.add(entry.key);
+                            _selectedDays.sort();
+                          }
+                        } else if (_selectedDays.length > 1) {
+                          _selectedDays.remove(entry.key);
+                        }
+                      });
+                    },
+                  );
+                }).toList(),
+              ),
+            ],
+            if (_selectedSchedule == ScheduleType.dateRange) ...[
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.date_range, size: 16),
+                      label: Text(
+                        'Od: ${DatabaseService.formatLocalDate(_startDate)}',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      onPressed: () async {
+                        final picked = await showDatePicker(
+                          context: context,
+                          initialDate: _startDate,
+                          firstDate: DateTime(2020),
+                          lastDate: DateTime(2035),
+                        );
+                        if (picked != null) {
+                          setState(() {
+                            _startDate = picked;
+                            if (_endDate != null && _endDate!.isBefore(picked)) {
+                              _endDate = picked;
+                            }
+                          });
+                        }
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.event, size: 16),
+                      label: Text(
+                        _endDate != null
+                            ? 'Do: ${DatabaseService.formatLocalDate(_endDate!)}'
+                            : 'Do: bez limitu',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      onPressed: () async {
+                        final picked = await showDatePicker(
+                          context: context,
+                          initialDate: _endDate ?? _startDate.add(const Duration(days: 7)),
+                          firstDate: _startDate,
+                          lastDate: DateTime(2035),
+                        );
+                        if (picked != null) {
+                          setState(() => _endDate = picked);
+                        }
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 24),
             ElevatedButton(
               style: ElevatedButton.styleFrom(

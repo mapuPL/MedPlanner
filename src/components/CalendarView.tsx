@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, CheckCircle2, AlertCircle, Clock, Check } from 'lucide-react';
-import { DoseItem, Therapy, isTherapyCompletedForDate, formatDoseDisplay } from '../utils/medicationLogic';
+import { DoseItem, Therapy, isTherapyCompletedForDate, formatDoseDisplay, addDaysToDateStr } from '../utils/medicationLogic';
 
 interface CalendarViewProps {
   currentDate: string; // YYYY-MM-DD
@@ -23,23 +23,19 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
 
   // Helper to change day
   const changeDay = (offset: number) => {
-    const d = new Date(selectedDate + 'T12:00:00Z');
-    d.setDate(d.getDate() + offset);
-    const newStr = d.toISOString().substring(0, 10);
+    const newStr = addDaysToDateStr(selectedDate, offset);
     setSelectedDate(newStr);
     onSelectDate(newStr);
   };
 
   // Generate 7-day strip around selected date
   const generateWeekDays = () => {
-    const center = new Date(selectedDate + 'T12:00:00Z');
     const days = [];
     for (let i = -3; i <= 3; i++) {
-      const d = new Date(center);
-      d.setDate(d.getDate() + i);
-      const iso = d.toISOString().substring(0, 10);
-      const dayName = d.toLocaleDateString('pl-PL', { weekday: 'short' });
-      const dayNum = d.getDate();
+      const iso = addDaysToDateStr(selectedDate, i);
+      const d = new Date(`${iso}T12:00:00Z`);
+      const dayName = d.toLocaleDateString('pl-PL', { weekday: 'short', timeZone: 'UTC' });
+      const dayNum = d.getUTCDate();
       const dosesForDay = allDoses.filter((item) => item.date === iso);
       const allDone = dosesForDay.length > 0 && dosesForDay.every((item) => item.status === 'taken');
       const hasDoses = dosesForDay.length > 0;

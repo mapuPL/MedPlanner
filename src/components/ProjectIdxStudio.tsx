@@ -235,37 +235,62 @@ export const ProjectIdxStudio: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleCopyCode(selectedFile.content, selectedFile.path)}
-                    className="px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white font-bold text-xs flex items-center gap-1.5 transition-colors shadow-xs"
-                  >
-                    {copiedFile === selectedFile.path ? (
-                      <>
-                        <Check className="w-3.5 h-3.5 text-emerald-200" />
-                        <span>Skopiowano!</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3.5 h-3.5" />
-                        <span>Kopiuj cały plik</span>
-                      </>
-                    )}
-                  </button>
+                  {selectedFile.isBase64 ? (
+                    <span className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 font-bold text-xs">
+                      Zasób PNG (w paczce .ZIP)
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleCopyCode(selectedFile.content, selectedFile.path)}
+                      className="px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white font-bold text-xs flex items-center gap-1.5 transition-colors shadow-xs"
+                    >
+                      {copiedFile === selectedFile.path ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-200" />
+                          <span>Skopiowano!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Kopiuj cały plik</span>
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {/* Code Pre Block */}
-              <div className="p-4 overflow-x-auto max-h-[600px] overflow-y-auto text-xs font-mono text-slate-200 leading-relaxed bg-slate-900">
-                <pre>
-                  <code>{selectedFile.content}</code>
-                </pre>
-              </div>
+              {/* Code Pre Block or Binary Image Preview */}
+              {selectedFile.isBase64 ? (
+                <div className="p-8 min-h-[320px] max-h-[600px] flex flex-col items-center justify-center gap-4 bg-slate-900">
+                  <div className="bg-white rounded-2xl p-6 shadow-lg border border-slate-700/40">
+                    <img
+                      src={`data:image/png;base64,${selectedFile.content}`}
+                      alt={selectedFile.name}
+                      className="max-h-56 max-w-full object-contain"
+                    />
+                  </div>
+                  <p className="text-xs text-slate-400 font-mono">
+                    {selectedFile.path}
+                  </p>
+                </div>
+              ) : (
+                <div className="p-4 overflow-x-auto max-h-[600px] overflow-y-auto text-xs font-mono text-slate-200 leading-relaxed bg-slate-900">
+                  <pre>
+                    <code>{selectedFile.content}</code>
+                  </pre>
+                </div>
+              )}
 
               {/* Code Footer */}
               <div className="bg-slate-950/80 px-4 py-2 border-t border-slate-800/80 text-2xs text-slate-400 flex items-center justify-between">
                 <span>{selectedFile.description}</span>
-                <span className="font-mono">{selectedFile.content.split('\n').length} linii</span>
+                <span className="font-mono">
+                  {selectedFile.isBase64
+                    ? `${Math.round((selectedFile.content.length * 3) / 4 / 1024 * 10) / 10} KB (PNG)`
+                    : `${selectedFile.content.split('\n').length} linii`}
+                </span>
               </div>
             </div>
           </div>

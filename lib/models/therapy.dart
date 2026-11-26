@@ -23,6 +23,9 @@ class Therapy {
     required this.createdAt,
   });
 
+  static String _formatYmd(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
   Map<String, dynamic> toMap() {
     return {
       'id': id,
@@ -31,8 +34,8 @@ class Therapy {
       'color_hex': colorHex,
       'icon_name': iconName,
       'profile_name': profileName,
-      'start_date': startDate.toIso8601String().substring(0, 10),
-      'end_date': endDate?.toIso8601String().substring(0, 10),
+      'start_date': _formatYmd(startDate),
+      'end_date': endDate != null ? _formatYmd(endDate!) : null,
       'is_active': isActive ? 1 : 0,
       'created_at': createdAt.toIso8601String(),
     };

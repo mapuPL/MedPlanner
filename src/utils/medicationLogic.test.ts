@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   formatDoseDisplay,
+  formatLocalDate,
+  addDaysToDateStr,
   calculateSnoozeTime,
   isMedicationActiveOnDate,
   sortDosesChronologically,
@@ -9,9 +11,8 @@ import {
   isTherapyCompletedForDate,
   parseNumericDose,
   evaluateCabinetStatus,
-  Medication,
-  DoseItem
 } from './medicationLogic.ts';
+import type { Medication, DoseItem } from './medicationLogic.ts';
 
 test('formatDoseDisplay formats units properly in Polish without duplication', () => {
   assert.equal(formatDoseDisplay('2', 'capsule'), '2 tabl.');
@@ -232,4 +233,15 @@ test('searchMedicines supports Polish diacritics, case-insensitivity, and substa
   const customFound = searchMedicines('wlasny', customList);
   assert.ok(customFound.length > 0 && customFound[0].name === 'Własny Syrop Ziołowy');
 });
+
+test('formatLocalDate and addDaysToDateStr handle calendar dates and month/year boundaries', () => {
+  const localMidnight = new Date(2026, 2, 15, 0, 15, 0); // 2026-03-15 00:15 local
+  assert.equal(formatLocalDate(localMidnight), '2026-03-15');
+
+  assert.equal(addDaysToDateStr('2026-03-31', 1), '2026-04-01');
+  assert.equal(addDaysToDateStr('2026-01-01', -1), '2025-12-31');
+  assert.equal(addDaysToDateStr('2024-02-28', 1), '2024-02-29'); // leap year
+  assert.equal(addDaysToDateStr('2026-10-25', 7), '2026-11-01');
+});
+
 

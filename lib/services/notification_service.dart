@@ -20,6 +20,9 @@ class NotificationService {
   static const String actionSnooze15 = 'ACTION_SNOOZE_15';
   static const String actionSnooze30 = 'ACTION_SNOOZE_30';
 
+  static int _doseNotificationId(String doseId) => doseId.hashCode & 0x7fffffff;
+  static int _snoozeNotificationId(String doseId) => ('${doseId}_snooze').hashCode & 0x7fffffff;
+
   Future<void> initialize({Function(String doseId)? onDoseTaken}) async {
     tz.initializeTimeZones();
     try {
@@ -43,9 +46,12 @@ class NotificationService {
         if (response.actionId == actionTake) {
           await DatabaseService.instance.markDoseAsTaken(payload);
           if (onDoseTaken != null) onDoseTaken(payload);
+        } else if (response.actionId == actionSnooze5) {
+          await DatabaseService.instance.snoozeDose(payload, 5);
         } else if (response.actionId == actionSnooze15) {
           await DatabaseService.instance.snoozeDose(payload, 15);
-          scheduleSnoozeNotification(doseId: payload, title: 'Odroczony lek', body: 'Czas zażyć dawkę!', minutes: 15);
+        } else if (response.actionId == actionSnooze30) {
+          await DatabaseService.instance.snoozeDose(payload, 30);
         }
       },
     );
@@ -112,16 +118,19 @@ class NotificationService {
     required int minutes,
   }) async {
     final scheduledTime = tz.TZDateTime.now(tz.local).add(Duration(minutes: minutes));
-    final notificationId = doseId.hashCode + minutes;
+    final notificationId = _snoozeNotificationId(doseId);
 
-    final androidDetails = AndroidNotificationDetails(
+    const androidDetails = AndroidNotificationDetails(
       channelId,
       channelName,
       channelDescription: channelDesc,
       importance: Importance.max,
       priority: Priority.high,
-      actions: const <AndroidNotificationAction>[
+      fullScreenIntent: true,
+      category: AndroidNotificationCategory.alarm,
+      actions: <AndroidNotificationAction>[
         AndroidNotificationAction(actionTake, 'Wziąłem', showsUserInterface: false, cancelNotification: true),
+        AndroidNotificationAction(actionSnooze15, 'Odłóż (15 min)', showsUserInterface: false, cancelNotification: true),
       ],
     );
 
@@ -130,29 +139,36 @@ class NotificationService {
       title,
       body,
       scheduledTime,
-      NotificationDetails(android: androidDetails),
+      const NotificationDetails(android: androidDetails),
       androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
       uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
       payload: doseId,
     );
   }
 
-  /// Anuluje pojedyncze zaplanowane powiadomienie dla podanej dawki
+  /// Anuluje zaplanowane powiadomienie główne oraz odroczone dla podanej dawki
   Future<void> cancelNotificationForDose(String doseId) async {
     try {
-      await _notificationsPlugin.cancel(doseId.hashCode.abs());
+      await _notificationsPlugin.cancel(_doseNotificationId(doseId));
+      await _notificationsPlugin.cancel(_snoozeNotificationId(doseId));
     } catch (_) {}
   }
 
-  /// Przelicza i planuje dokładne alarmy w tle dla wszystkich nadchodzących dawek
+  /// Przelicza i planuje dokładne alarmy w tle dla wszystkich nadchodzących dawek (dzisiaj + 6 dni)
   /// Działa w trybie exactAllowWhileIdle, dzięki czemu budzi urządzenie nawet w trybie uśpienia (Doze mode)
   Future<void> rescheduleAllUpcomingDoses() async {
     try {
-      await _notificationsPlugin.cancelAll();
+      final pending = await _notificationsPlugin.pendingNotificationRequests();
+      for (final req in pending) {
+        if (req.id != 999999) {
+          await _notificationsPlugin.cancel(req.id);
+        }
+      }
+
       final now = DateTime.now();
 
-      // Przelicz powiadomienia na dzisiaj oraz kolejne 3 dni w przód
-      for (int i = 0; i < 4; i++) {
+      // Przelicz powiadomienia na dzisiaj oraz kolejne 6 dni w przód (łącznie 7 dni)
+      for (int i = 0; i < 7; i++) {
         final targetDate = now.add(Duration(days: i));
         final doses = await DatabaseService.instance.getDosesForDate(targetDate);
 
@@ -160,16 +176,22 @@ class NotificationService {
           if (dose.status == DoseStatus.taken || dose.status == DoseStatus.skipped) continue;
 
           DateTime scheduledAt;
+          int notifId;
+
           if (dose.status == DoseStatus.snoozed && dose.snoozedUntil != null) {
             final parts = dose.snoozedUntil!.split(':');
             if (parts.length >= 2) {
+              final alarmBaseDate = dose.snoozedUntil!.compareTo(dose.scheduledTime) < 0
+                  ? targetDate.add(const Duration(days: 1))
+                  : targetDate;
               scheduledAt = DateTime(
-                targetDate.year,
-                targetDate.month,
-                targetDate.day,
+                alarmBaseDate.year,
+                alarmBaseDate.month,
+                alarmBaseDate.day,
                 int.tryParse(parts[0]) ?? 8,
                 int.tryParse(parts[1]) ?? 0,
               );
+              notifId = _snoozeNotificationId(dose.id);
             } else {
               continue;
             }
@@ -182,10 +204,10 @@ class NotificationService {
               int.tryParse(parts[0]) ?? 8,
               int.tryParse(parts[1]) ?? 0,
             );
+            notifId = _doseNotificationId(dose.id);
           }
 
           if (scheduledAt.isAfter(now)) {
-            final notifId = dose.id.hashCode.abs();
             await scheduleExactDoseNotification(
               notificationId: notifId,
               doseId: dose.id,

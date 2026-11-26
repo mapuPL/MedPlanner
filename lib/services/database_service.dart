@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
@@ -49,6 +50,17 @@ class DatabaseService {
   static const String databaseFileName = 'medications_catalog.db';
   static const String backupFileName = 'medplaner-backup.db';
   static Database? _database;
+
+  final ValueNotifier<int> dataVersion = ValueNotifier<int>(0);
+
+  void notifyDataChanged() => dataVersion.value++;
+
+  static String formatLocalDate(DateTime date) {
+    final y = date.year.toString().padLeft(4, '0');
+    final m = date.month.toString().padLeft(2, '0');
+    final d = date.day.toString().padLeft(2, '0');
+    return '$y-$m-$d';
+  }
 
   Future<Database> get database async {
     if (_database != null && _database!.isOpen) return _database!;
@@ -255,6 +267,7 @@ class DatabaseService {
     await dbFile.writeAsBytes(bytes, flush: true);
     await reloadDatabase();
     await NotificationService.instance.rescheduleAllUpcomingDoses();
+    notifyDataChanged();
     return true;
   }
 
@@ -358,6 +371,8 @@ class DatabaseService {
   Future<void> insertTherapy(Therapy therapy) async {
     final db = await database;
     await db.insert('therapies', therapy.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
+    await NotificationService.instance.rescheduleAllUpcomingDoses();
+    notifyDataChanged();
   }
 
   Future<void> updateTherapy(Therapy therapy) async {
@@ -368,6 +383,8 @@ class DatabaseService {
       where: 'id = ?',
       whereArgs: [therapy.id],
     );
+    await NotificationService.instance.rescheduleAllUpcomingDoses();
+    notifyDataChanged();
   }
 
   Future<void> deleteTherapy(String id) async {
@@ -376,6 +393,7 @@ class DatabaseService {
     await db.delete('medications', where: 'therapy_id = ?', whereArgs: [id]);
     await db.delete('dose_logs', where: 'therapy_id = ?', whereArgs: [id]);
     await NotificationService.instance.rescheduleAllUpcomingDoses();
+    notifyDataChanged();
   }
 
   Future<List<Therapy>> getTherapies({bool activeOnly = false}) async {
@@ -389,15 +407,17 @@ class DatabaseService {
     final db = await database;
     await db.insert('medications', medication.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
     await NotificationService.instance.rescheduleAllUpcomingDoses();
+    notifyDataChanged();
   }
 
   Future<void> updateMedicationStock(String medicationId, double newStock, {DateTime? expiryDate}) async {
     final db = await database;
     final data = <String, dynamic>{'stock_quantity': newStock};
     if (expiryDate != null) {
-      data['expiry_date'] = expiryDate.toIso8601String().substring(0, 10);
+      data['expiry_date'] = formatLocalDate(expiryDate);
     }
     await db.update('medications', data, where: 'id = ?', whereArgs: [medicationId]);
+    notifyDataChanged();
   }
 
   Future<void> deleteMedication(String id) async {
@@ -405,6 +425,7 @@ class DatabaseService {
     await db.delete('medications', where: 'id = ?', whereArgs: [id]);
     await db.delete('dose_logs', where: 'medication_id = ?', whereArgs: [id]);
     await NotificationService.instance.rescheduleAllUpcomingDoses();
+    notifyDataChanged();
   }
 
   Future<List<Medication>> getMedicationsForTherapy(String therapyId) async {
@@ -421,7 +442,7 @@ class DatabaseService {
 
   Future<List<DoseLog>> getDosesForDate(DateTime date) async {
     final db = await database;
-    final dateStr = date.toIso8601String().substring(0, 10);
+    final dateStr = formatLocalDate(date);
 
     await _ensureDosesGeneratedForDate(date);
 
@@ -436,6 +457,7 @@ class DatabaseService {
       JOIN medications m ON dl.medication_id = m.id
       JOIN therapies t ON dl.therapy_id = t.id
       WHERE dl.scheduled_date = ?
+        AND (t.is_active = 1 OR dl.status = 'taken')
       ORDER BY 
         CASE 
           WHEN dl.status = 'snoozed' AND dl.snoozed_until IS NOT NULL THEN dl.snoozed_until 
@@ -448,22 +470,29 @@ class DatabaseService {
 
   Future<void> _ensureDosesGeneratedForDate(DateTime date) async {
     final db = await database;
-    final dateStr = date.toIso8601String().substring(0, 10);
+    final dateStr = formatLocalDate(date);
 
-    final existingCount = Sqflite.firstIntValue(await db.rawQuery(
-      'SELECT COUNT(*) FROM dose_logs WHERE scheduled_date = ?',
-      [dateStr],
-    ));
+    final existingRows = await db.query(
+      'dose_logs',
+      columns: ['id'],
+      where: 'scheduled_date = ?',
+      whereArgs: [dateStr],
+    );
+    final existingIds = existingRows.map((row) => row['id'] as String).toSet();
 
-    if ((existingCount ?? 0) > 0) return;
+    final activeTherapies = await getTherapies(activeOnly: true);
+    final activeTherapyIds = activeTherapies.map((t) => t.id).toSet();
+    if (activeTherapyIds.isEmpty) return;
 
     final allMeds = await getAllMedications();
     final batch = db.batch();
     final isoWeekday = date.weekday;
+    bool hasInserts = false;
 
     for (final med in allMeds) {
-      if (dateStr.compareTo(med.startDate.toIso8601String().substring(0, 10)) < 0) continue;
-      if (med.endDate != null && dateStr.compareTo(med.endDate!.toIso8601String().substring(0, 10)) > 0) continue;
+      if (!activeTherapyIds.contains(med.therapyId)) continue;
+      if (dateStr.compareTo(formatLocalDate(med.startDate)) < 0) continue;
+      if (med.endDate != null && dateStr.compareTo(formatLocalDate(med.endDate!)) > 0) continue;
 
       bool shouldSchedule = false;
       if (med.scheduleType == ScheduleType.daily || med.scheduleType == ScheduleType.dateRange) {
@@ -475,23 +504,39 @@ class DatabaseService {
       if (shouldSchedule) {
         for (final time in med.times) {
           final doseId = '${med.id}_${dateStr}_${time.replaceAll(':', '')}';
-          batch.insert('dose_logs', {
-            'id': doseId,
-            'medication_id': med.id,
-            'therapy_id': med.therapyId,
-            'scheduled_date': dateStr,
-            'scheduled_time': time,
-            'actual_taken_time': null,
-            'status': DoseStatus.pending.name,
-            'snoozed_until': null,
-            'snooze_count': 0,
-            'notes': null,
-          });
+          if (existingIds.contains(doseId)) continue;
+
+          batch.insert(
+            'dose_logs',
+            {
+              'id': doseId,
+              'medication_id': med.id,
+              'therapy_id': med.therapyId,
+              'scheduled_date': dateStr,
+              'scheduled_time': time,
+              'actual_taken_time': null,
+              'status': DoseStatus.pending.name,
+              'snoozed_until': null,
+              'snooze_count': 0,
+              'notes': null,
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+          hasInserts = true;
         }
       }
     }
 
-    await batch.commit(noResult: true);
+    if (hasInserts) {
+      await batch.commit(noResult: true);
+    }
+  }
+
+  double _parseDoseAmountValue(String doseStr) {
+    final match = RegExp(r'(\d+(?:[.,]\d+)?)').firstMatch(doseStr);
+    if (match == null) return 1.0;
+    final parsed = double.tryParse(match.group(1)!.replaceAll(',', '.')) ?? 1.0;
+    return parsed > 0 ? parsed : 1.0;
   }
 
   Future<void> markDoseAsTaken(String doseId) async {
@@ -519,8 +564,7 @@ class DatabaseService {
           final currentStock = (medRows.first['stock_quantity'] as num?)?.toDouble();
           if (currentStock != null && currentStock > 0) {
             final doseStr = (medRows.first['dose_amount'] as String?) ?? '1';
-            final match = RegExp(r'(\d+(?:[.,]\d+)?)').firstMatch(doseStr);
-            final parsedAmount = match != null ? (double.tryParse(match.group(1)!.replaceAll(',', '.')) ?? 1.0) : 1.0;
+            final parsedAmount = _parseDoseAmountValue(doseStr);
             final nextStock = (currentStock - parsedAmount).clamp(0.0, 99999.0);
             await db.update('medications', {'stock_quantity': nextStock}, where: 'id = ?', whereArgs: [medId]);
           }
@@ -529,6 +573,62 @@ class DatabaseService {
     }
 
     await NotificationService.instance.cancelNotificationForDose(doseId);
+    notifyDataChanged();
+  }
+
+  Future<void> markDoseAsSkipped(String doseId) async {
+    final db = await database;
+    await db.update(
+      'dose_logs',
+      {
+        'status': DoseStatus.skipped.name,
+        'actual_taken_time': null,
+        'snoozed_until': null,
+      },
+      where: 'id = ?',
+      whereArgs: [doseId],
+    );
+
+    await NotificationService.instance.cancelNotificationForDose(doseId);
+    notifyDataChanged();
+  }
+
+  Future<void> undoDoseStatus(String doseId) async {
+    final db = await database;
+    final doseRows = await db.query('dose_logs', where: 'id = ?', whereArgs: [doseId], limit: 1);
+    if (doseRows.isEmpty) return;
+
+    final prevStatus = doseRows.first['status'] as String?;
+    final medId = doseRows.first['medication_id'] as String?;
+
+    await db.update(
+      'dose_logs',
+      {
+        'status': DoseStatus.pending.name,
+        'actual_taken_time': null,
+        'snoozed_until': null,
+      },
+      where: 'id = ?',
+      whereArgs: [doseId],
+    );
+
+    // Przywróć odjętą dawkę do domowej apteczki, jeśli wcześniej dawka była oznaczona jako wzięta
+    if (prevStatus == DoseStatus.taken.name && medId != null) {
+      final medRows = await db.query('medications', where: 'id = ?', whereArgs: [medId], limit: 1);
+      if (medRows.isNotEmpty) {
+        final currentStock = (medRows.first['stock_quantity'] as num?)?.toDouble();
+        if (currentStock != null) {
+          final doseStr = (medRows.first['dose_amount'] as String?) ?? '1';
+          final parsedAmount = _parseDoseAmountValue(doseStr);
+          final nextStock = (currentStock + parsedAmount).clamp(0.0, 99999.0);
+          await db.update('medications', {'stock_quantity': nextStock}, where: 'id = ?', whereArgs: [medId]);
+        }
+      }
+    }
+
+    await NotificationService.instance.cancelNotificationForDose(doseId);
+    await NotificationService.instance.rescheduleAllUpcomingDoses();
+    notifyDataChanged();
   }
 
   Future<void> snoozeDose(String doseId, int minutes) async {
@@ -536,16 +636,37 @@ class DatabaseService {
     final now = DateTime.now().add(Duration(minutes: minutes));
     final snoozedTimeString = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
 
+    final infoRows = await db.rawQuery('''
+      SELECT m.name AS medication_name, m.dose_amount, t.name AS therapy_name
+      FROM dose_logs dl
+      JOIN medications m ON dl.medication_id = m.id
+      JOIN therapies t ON dl.therapy_id = t.id
+      WHERE dl.id = ?
+      LIMIT 1
+    ''', [doseId]);
+
+    String title = '⏰ Odroczone przypomnienie o leku';
+    String body = 'Czas zażyć dawkę!';
+    if (infoRows.isNotEmpty) {
+      final medName = (infoRows.first['medication_name'] as String?) ?? 'Lek';
+      final doseAmount = (infoRows.first['dose_amount'] as String?) ?? '1';
+      final therapyName = (infoRows.first['therapy_name'] as String?) ?? 'Terapia';
+      title = '⏰ Odroczony lek: $medName';
+      body = 'Dawka: $doseAmount ($therapyName)';
+    }
+
     await db.rawUpdate('''
       UPDATE dose_logs 
-      SET status = ?, snoozed_until = ?, snooze_count = snooze_count + 1 
+      SET status = ?, snoozed_until = ?, snooze_count = COALESCE(snooze_count, 0) + 1 
       WHERE id = ?
     ''', [DoseStatus.snoozed.name, snoozedTimeString, doseId]);
+
     await NotificationService.instance.scheduleSnoozeNotification(
       doseId: doseId,
-      title: '⏰ Odroczone przypomnienie o leku',
-      body: 'Czas zażyć dawkę!',
+      title: title,
+      body: body,
       minutes: minutes,
     );
+    notifyDataChanged();
   }
 }

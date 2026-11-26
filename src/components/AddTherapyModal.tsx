@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, Check, Palette, Users } from 'lucide-react';
-import { Therapy, FamilyProfile } from '../utils/medicationLogic';
+import { Therapy, FamilyProfile, formatLocalDate } from '../utils/medicationLogic';
 
 interface AddTherapyModalProps {
   isOpen: boolean;
@@ -41,7 +41,7 @@ export const AddTherapyModal: React.FC<AddTherapyModalProps> = ({
       return;
     }
 
-    const todayStr = new Date().toISOString().substring(0, 10);
+    const todayStr = formatLocalDate();
     onSave({
       name: name.trim(),
       description: description.trim() || undefined,

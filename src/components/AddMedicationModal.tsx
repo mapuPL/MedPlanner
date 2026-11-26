@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Plus, Trash2, Clock, Calendar, Check, AlertCircle, Search, Sparkles, Database } from 'lucide-react';
-import { Therapy, Medication, MedicationType, ScheduleType, MEDICATION_TYPE_LABELS } from '../utils/medicationLogic';
+import { Therapy, Medication, MedicationType, ScheduleType, MEDICATION_TYPE_LABELS, formatLocalDate } from '../utils/medicationLogic';
 import { searchMedicines, RegisteredMedicine } from '../data/polishMedicationsRegistry';
 
 interface AddMedicationModalProps {
@@ -37,7 +37,7 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
   const [newTimeInput, setNewTimeInput] = useState('14:00');
   const [scheduleType, setScheduleType] = useState<ScheduleType>('daily');
   const [selectedDays, setSelectedDays] = useState<number[]>([1, 2, 3, 4, 5, 6, 7]);
-  const [startDate, setStartDate] = useState(new Date().toISOString().substring(0, 10));
+  const [startDate, setStartDate] = useState(formatLocalDate());
   const [endDate, setEndDate] = useState('');
   const [packageSize, setPackageSize] = useState('30');
   const [expiryDate, setExpiryDate] = useState('');

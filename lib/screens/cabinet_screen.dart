@@ -20,10 +20,22 @@ class _CabinetScreenState extends State<CabinetScreen> {
   @override
   void initState() {
     super.initState();
+    DatabaseService.instance.dataVersion.addListener(_onDatabaseChanged);
     _loadData();
   }
 
+  @override
+  void dispose() {
+    DatabaseService.instance.dataVersion.removeListener(_onDatabaseChanged);
+    super.dispose();
+  }
+
+  void _onDatabaseChanged() {
+    if (mounted) _loadData();
+  }
+
   Future<void> _loadData() async {
+    if (!mounted) return;
     setState(() => _isLoading = true);
     final meds = await DatabaseService.instance.getAllMedications();
     final therapies = await DatabaseService.instance.getTherapies();
@@ -36,12 +48,18 @@ class _CabinetScreenState extends State<CabinetScreen> {
     }
   }
 
+  int? _daysUntilExpiry(Medication med) {
+    if (med.expiryDate == null) return null;
+    final now = DateTime.now();
+    final todayDate = DateTime(now.year, now.month, now.day);
+    final expiryDay = DateTime(med.expiryDate!.year, med.expiryDate!.month, med.expiryDate!.day);
+    return expiryDay.difference(todayDate).inDays;
+  }
+
   bool _hasAlert(Medication med) {
     if (med.isLowStock) return true;
-    if (med.expiryDate != null) {
-      final days = med.expiryDate!.difference(DateTime.now()).inDays;
-      if (days <= 30) return true;
-    }
+    final days = _daysUntilExpiry(med);
+    if (days != null && days <= 30) return true;
     return false;
   }
 
@@ -184,8 +202,8 @@ class _CabinetScreenState extends State<CabinetScreen> {
                     final stock = med.stockQuantity;
                     final ratio = (stock != null && pkg > 0) ? (stock / pkg).clamp(0.0, 1.0) : 1.0;
 
-                    final isExpired = med.expiryDate != null && med.expiryDate!.isBefore(DateTime.now());
-                    final daysLeft = med.expiryDate?.difference(DateTime.now()).inDays;
+                    final daysLeft = _daysUntilExpiry(med);
+                    final isExpired = daysLeft != null && daysLeft < 0;
                     final isExpiringSoon = daysLeft != null && daysLeft >= 0 && daysLeft <= 30;
                     final alertActive = isExpired || isExpiringSoon || med.isLowStock;
 
@@ -213,7 +231,10 @@ class _CabinetScreenState extends State<CabinetScreen> {
                               if (isExpired)
                                 Text('Przeterminowany', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.red.shade700))
                               else if (isExpiringSoon)
-                                Text('Wygasa za $daysLeft d', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.amber.shade800))
+                                Text(
+                                  daysLeft == 0 ? 'Wygasa dzisiaj!' : 'Wygasa za $daysLeft d',
+                                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.amber.shade800),
+                                )
                               else if (med.isLowStock)
                                 Text('Kończy się zapas', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.amber.shade800)),
                             ],

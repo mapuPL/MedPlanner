@@ -38,6 +38,8 @@ import {
   calculateCompliance,
   sortDosesChronologically,
   formatDoseDisplay,
+  formatLocalDate,
+  addDaysToDateStr,
   isMedicationActiveOnDate,
   evaluateCabinetStatus,
   MEDICATION_TYPE_LABELS,
@@ -105,18 +107,16 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
   const [incomingNotificationDose, setIncomingNotificationDose] = useState<DoseItem | null>(null);
 
   // Selected date in Today strip (default today)
-  const todayStr = new Date().toISOString().substring(0, 10);
+  const todayStr = formatLocalDate();
   const [selectedDayStr, setSelectedDayStr] = useState<string>(todayStr);
 
   // Build 7-day strip centered around today (-2 to +4 days)
   const weekStrip = useMemo(() => {
-    const base = new Date(`${todayStr}T12:00:00Z`);
     const days = [];
     for (let i = -2; i <= 4; i++) {
-      const d = new Date(base);
-      d.setUTCDate(d.getUTCDate() + i);
-      const iso = d.toISOString().substring(0, 10);
-      const dayShort = d.toLocaleDateString('pl-PL', { weekday: 'short' }).replace('.', '');
+      const iso = addDaysToDateStr(todayStr, i);
+      const d = new Date(`${iso}T12:00:00Z`);
+      const dayShort = d.toLocaleDateString('pl-PL', { weekday: 'short', timeZone: 'UTC' }).replace('.', '');
       days.push({
         iso,
         dayShort,
@@ -405,9 +405,11 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
           <div className="bg-white px-5 pt-2 pb-3 border-b border-slate-200/70 shrink-0">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-teal-700 text-white flex items-center justify-center">
-                  <Pill className="w-4 h-4" />
-                </div>
+                <img
+                  src="/logo-icon.png"
+                  alt="MedPlaner logo"
+                  className="w-9 h-9 rounded-xl object-contain bg-white border border-slate-200/80 p-0.5 shrink-0"
+                />
                 <div>
                   <h1 className="font-extrabold text-slate-900 text-base leading-tight tracking-tight">
                     MedPlaner

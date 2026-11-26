@@ -26,18 +26,26 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    DatabaseService.instance.dataVersion.addListener(_onDatabaseChanged);
     _loadDoses();
   }
 
   @override
   void dispose() {
+    DatabaseService.instance.dataVersion.removeListener(_onDatabaseChanged);
     _searchController.dispose();
     super.dispose();
   }
 
+  void _onDatabaseChanged() {
+    if (mounted) _loadDoses();
+  }
+
   Future<void> _loadDoses() async {
+    if (!mounted) return;
     setState(() => _isLoading = true);
     final doses = await DatabaseService.instance.getDosesForDate(_currentDate);
+    if (!mounted) return;
     setState(() {
       _doses = doses;
       _isLoading = false;
@@ -74,7 +82,22 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         backgroundColor: Colors.white,
         surfaceTintColor: Colors.white,
-        title: const Text('MedPlaner', style: TextStyle(fontWeight: FontWeight.w800)),
+        title: Row(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.asset(
+                'assets/images/logo_icon.png',
+                width: 30,
+                height: 30,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => const Icon(Icons.medication, color: Color(0xFF0F766E)),
+              ),
+            ),
+            const SizedBox(width: 10),
+            const Text('MedPlaner', style: TextStyle(fontWeight: FontWeight.w800)),
+          ],
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.notifications_active_outlined, color: Colors.teal),
@@ -404,6 +427,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildDoseItem(DoseLog dose) {
     final isTaken = dose.status == DoseStatus.taken;
     final isSnoozed = dose.status == DoseStatus.snoozed;
+    final isSkipped = dose.status == DoseStatus.skipped;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -412,7 +436,9 @@ class _HomeScreenState extends State<HomeScreen> {
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: isTaken ? Colors.green.shade200 : (isSnoozed ? Colors.amber.shade300 : Colors.grey.shade200),
+          color: isTaken
+              ? Colors.green.shade200
+              : (isSnoozed ? Colors.amber.shade300 : Colors.grey.shade200),
         ),
       ),
       child: Column(
@@ -422,7 +448,11 @@ class _HomeScreenState extends State<HomeScreen> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
                 decoration: BoxDecoration(
-                  color: isTaken ? Colors.green.shade50 : (isSnoozed ? Colors.amber.shade50 : Colors.grey.shade100),
+                  color: isTaken
+                      ? Colors.green.shade50
+                      : (isSnoozed
+                          ? Colors.amber.shade50
+                          : (isSkipped ? Colors.grey.shade200 : Colors.grey.shade100)),
                   borderRadius: BorderRadius.circular(11),
                 ),
                 child: Text(
@@ -430,7 +460,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   style: TextStyle(
                     fontWeight: FontWeight.w800,
                     fontSize: 13,
-                    color: isTaken ? Colors.green.shade800 : Colors.black87,
+                    color: isTaken
+                        ? Colors.green.shade800
+                        : (isSkipped ? Colors.grey.shade600 : Colors.black87),
                   ),
                 ),
               ),
@@ -444,8 +476,8 @@ class _HomeScreenState extends State<HomeScreen> {
                       style: TextStyle(
                         fontSize: 15,
                         fontWeight: FontWeight.bold,
-                        decoration: isTaken ? TextDecoration.lineThrough : null,
-                        color: isTaken ? Colors.grey.shade500 : Colors.black87,
+                        decoration: (isTaken || isSkipped) ? TextDecoration.lineThrough : null,
+                        color: (isTaken || isSkipped) ? Colors.grey.shade500 : Colors.black87,
                       ),
                     ),
                     const SizedBox(height: 2),
@@ -457,18 +489,22 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
               Text(
-                isTaken ? 'Wzięte' : (isSnoozed ? 'Odłożone' : 'Plan'),
+                isTaken
+                    ? 'Wzięte'
+                    : (isSnoozed ? 'Odłożone' : (isSkipped ? 'Pominięte' : 'Plan')),
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.bold,
                   color: isTaken
                       ? Colors.green.shade700
-                      : (isSnoozed ? Colors.amber.shade800 : Colors.grey.shade600),
+                      : (isSnoozed
+                          ? Colors.amber.shade800
+                          : (isSkipped ? Colors.grey.shade500 : Colors.grey.shade600)),
                 ),
               ),
             ],
           ),
-          if (!isTaken) ...[
+          if (!isTaken && !isSkipped) ...[
             const SizedBox(height: 12),
             Row(
               children: [
@@ -485,7 +521,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     label: const Text('Wziąłem', style: TextStyle(fontWeight: FontWeight.bold)),
                     onPressed: () async {
                       await DatabaseService.instance.markDoseAsTaken(dose.id);
-                      _loadDoses();
                     },
                   ),
                 ),
@@ -504,13 +539,39 @@ class _HomeScreenState extends State<HomeScreen> {
                         medicationName: dose.medicationName ?? 'Lek',
                         onSnoozeSelected: (mins) async {
                           await DatabaseService.instance.snoozeDose(dose.id, mins);
-                          _loadDoses();
                         },
                       );
                     },
                   ),
                 ),
+                const SizedBox(width: 4),
+                TextButton(
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.grey.shade600,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                  ),
+                  onPressed: () async {
+                    await DatabaseService.instance.markDoseAsSkipped(dose.id);
+                  },
+                  child: const Text('Pomiń', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12)),
+                ),
               ],
+            ),
+          ] else ...[
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.teal.shade800,
+                  visualDensity: VisualDensity.compact,
+                ),
+                icon: const Icon(Icons.undo, size: 15),
+                label: const Text('Cofnij', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                onPressed: () async {
+                  await DatabaseService.instance.undoDoseStatus(dose.id);
+                },
+              ),
             ),
           ],
         ],

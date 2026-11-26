@@ -18,12 +18,25 @@ class _CalendarScreenState extends State<CalendarScreen> {
   @override
   void initState() {
     super.initState();
+    DatabaseService.instance.dataVersion.addListener(_onDatabaseChanged);
     _loadDosesForSelectedDate();
   }
 
+  @override
+  void dispose() {
+    DatabaseService.instance.dataVersion.removeListener(_onDatabaseChanged);
+    super.dispose();
+  }
+
+  void _onDatabaseChanged() {
+    if (mounted) _loadDosesForSelectedDate();
+  }
+
   Future<void> _loadDosesForSelectedDate() async {
+    if (!mounted) return;
     setState(() => _isLoading = true);
     final doses = await DatabaseService.instance.getDosesForDate(_selectedDate);
+    if (!mounted) return;
     setState(() {
       _doses = doses;
       _isLoading = false;
@@ -89,7 +102,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         children: dosesByTherapy.entries.map((entry) {
                           final therapyName = entry.key;
                           final doses = entry.value;
-                          final allTaken = doses.every((d) => d.status == DoseStatus.taken);
+                          final takenCount = doses.where((d) => d.status == DoseStatus.taken).length;
+                          final allTaken = takenCount == doses.length;
+                          final statusLabel = allTaken
+                              ? 'Terapia zażyta w 100%'
+                              : (takenCount == 0 ? 'Oczekuje' : 'Częściowo przyjęte');
 
                           return Card(
                             margin: const EdgeInsets.only(bottom: 16),
@@ -102,22 +119,29 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                   Row(
                                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                     children: [
-                                      Text(
-                                        therapyName,
-                                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                                      Expanded(
+                                        child: Text(
+                                          therapyName,
+                                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                                        ),
                                       ),
+                                      const SizedBox(width: 8),
                                       Container(
                                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                                         decoration: BoxDecoration(
-                                          color: allTaken ? Colors.green.shade50 : Colors.amber.shade50,
+                                          color: allTaken
+                                              ? Colors.green.shade50
+                                              : (takenCount == 0 ? Colors.grey.shade100 : Colors.amber.shade50),
                                           borderRadius: BorderRadius.circular(8),
                                         ),
                                         child: Text(
-                                          allTaken ? 'Terapia zażyta w 100%' : 'Częściowo przyjęte',
+                                          statusLabel,
                                           style: TextStyle(
                                             fontSize: 11,
                                             fontWeight: FontWeight.bold,
-                                            color: allTaken ? Colors.green.shade700 : Colors.amber.shade800,
+                                            color: allTaken
+                                                ? Colors.green.shade700
+                                                : (takenCount == 0 ? Colors.grey.shade700 : Colors.amber.shade800),
                                           ),
                                         ),
                                       ),
@@ -132,8 +156,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                         trailing: Icon(
                                           d.status == DoseStatus.taken
                                               ? Icons.check_circle
-                                              : (d.status == DoseStatus.snoozed ? Icons.snooze : Icons.radio_button_unchecked),
-                                          color: d.status == DoseStatus.taken ? Colors.teal : Colors.grey,
+                                              : (d.status == DoseStatus.snoozed
+                                                  ? Icons.snooze
+                                                  : (d.status == DoseStatus.skipped
+                                                      ? Icons.do_not_disturb_on_outlined
+                                                      : Icons.radio_button_unchecked)),
+                                          color: d.status == DoseStatus.taken
+                                              ? Colors.teal
+                                              : (d.status == DoseStatus.snoozed ? Colors.amber.shade700 : Colors.grey),
                                         ),
                                       )),
                                 ],

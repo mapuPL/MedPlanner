@@ -35,7 +35,16 @@ jobs:
           # Jeśli w repozytorium brakuje wrappera Gradle lub settings.gradle.kts, Flutter wygeneruje je automatycznie
           if [ ! -f "android/gradlew" ] || ( [ ! -f "android/settings.gradle.kts" ] && [ ! -f "android/settings.gradle" ] ); then
             echo "Inicjalizacja brakującej otoczki Android..."
+            if [ -d "android/app/src/main/res" ]; then
+              mkdir -p /tmp/custom_res
+              cp -r android/app/src/main/res/mipmap-* /tmp/custom_res/ 2>/dev/null || true
+            fi
             flutter create . --platforms=android --org=com.example --project-name=medplaner
+            if [ -d "/tmp/custom_res" ]; then
+              mkdir -p android/app/src/main/res
+              cp -r /tmp/custom_res/mipmap-* android/app/src/main/res/ 2>/dev/null || true
+              rm -rf /tmp/custom_res
+            fi
           fi
 
           # Usuń ewentualne stare pliki Groovy, aby uniknąć konfliktu z Kotlin DSL (.kts)

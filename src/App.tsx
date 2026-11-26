@@ -4,7 +4,6 @@ import {
   Code2,
   Download,
   ShieldCheck,
-  Pill,
   Package,
   Users,
   Plus,
@@ -21,6 +20,9 @@ import {
   parseNumericDose,
   evaluateCabinetStatus,
   calculateCompliance,
+  formatLocalDate,
+  addDaysToDateStr,
+  isMedicationActiveOnDate,
   MEDICATION_TYPE_LABELS,
 } from './utils/medicationLogic';
 import { PhoneSimulator } from './components/PhoneSimulator';
@@ -35,6 +37,8 @@ const INITIAL_PROFILES: FamilyProfile[] = [
   { id: 'kid', name: 'Zosia', relation: 'Dziecko', avatarColor: '#3B82F6' },
 ];
 
+const BASE_TODAY = formatLocalDate();
+
 const INITIAL_THERAPIES: Therapy[] = [
   {
     id: 'th-1',
@@ -43,7 +47,7 @@ const INITIAL_THERAPIES: Therapy[] = [
     color: '#8b5cf6',
     icon: 'medical_services',
     profileId: 'self',
-    startDate: new Date(Date.now() - 2 * 86400000).toISOString().substring(0, 10),
+    startDate: addDaysToDateStr(BASE_TODAY, -2),
     isActive: true,
     createdAt: new Date().toISOString(),
   },
@@ -54,7 +58,7 @@ const INITIAL_THERAPIES: Therapy[] = [
     color: '#3b82f6',
     icon: 'droplet',
     profileId: 'mom',
-    startDate: new Date(Date.now() - 5 * 86400000).toISOString().substring(0, 10),
+    startDate: addDaysToDateStr(BASE_TODAY, -5),
     isActive: true,
     createdAt: new Date().toISOString(),
   },
@@ -65,14 +69,14 @@ const INITIAL_THERAPIES: Therapy[] = [
     color: '#10b981',
     icon: 'heart',
     profileId: 'self',
-    startDate: new Date(Date.now() - 30 * 86400000).toISOString().substring(0, 10),
+    startDate: addDaysToDateStr(BASE_TODAY, -30),
     isActive: true,
     createdAt: new Date().toISOString(),
   },
 ];
 
-const in20Days = new Date(Date.now() + 20 * 86400000).toISOString().substring(0, 10);
-const in8Months = new Date(Date.now() + 240 * 86400000).toISOString().substring(0, 10);
+const in20Days = addDaysToDateStr(BASE_TODAY, 20);
+const in8Months = addDaysToDateStr(BASE_TODAY, 240);
 
 const INITIAL_MEDICATIONS: Medication[] = [
   {
@@ -85,7 +89,7 @@ const INITIAL_MEDICATIONS: Medication[] = [
     instructions: 'Po posiłku, popić pełną szklanką wody',
     times: ['08:00', '20:00'],
     scheduleType: 'daily',
-    startDate: new Date(Date.now() - 2 * 86400000).toISOString().substring(0, 10),
+    startDate: addDaysToDateStr(BASE_TODAY, -2),
     packageSize: 16,
     stockQuantity: 4,
     lowStockThreshold: 5,
@@ -101,7 +105,7 @@ const INITIAL_MEDICATIONS: Medication[] = [
     instructions: 'Po 1 kropli do każdego oka',
     times: ['08:30', '14:00', '21:00'],
     scheduleType: 'daily',
-    startDate: new Date(Date.now() - 5 * 86400000).toISOString().substring(0, 10),
+    startDate: addDaysToDateStr(BASE_TODAY, -5),
     packageSize: 100,
     stockQuantity: 62,
     lowStockThreshold: 15,
@@ -117,7 +121,7 @@ const INITIAL_MEDICATIONS: Medication[] = [
     instructions: 'W trakcie obiadu',
     times: ['13:00'],
     scheduleType: 'daily',
-    startDate: new Date(Date.now() - 30 * 86400000).toISOString().substring(0, 10),
+    startDate: addDaysToDateStr(BASE_TODAY, -30),
     packageSize: 60,
     stockQuantity: 34,
     lowStockThreshold: 8,
@@ -133,7 +137,7 @@ const INITIAL_MEDICATIONS: Medication[] = [
     instructions: 'Przed snem łagodząco',
     times: ['21:30'],
     scheduleType: 'daily',
-    startDate: new Date().toISOString().substring(0, 10),
+    startDate: BASE_TODAY,
     packageSize: 125,
     stockQuantity: 85,
     lowStockThreshold: 20,
@@ -143,8 +147,8 @@ const INITIAL_MEDICATIONS: Medication[] = [
 
 function generateSampleDoses(therapies: Therapy[], medications: Medication[]): DoseItem[] {
   const doses: DoseItem[] = [];
-  const todayStr = new Date().toISOString().substring(0, 10);
-  const yesterdayStr = new Date(Date.now() - 86400000).toISOString().substring(0, 10);
+  const todayStr = formatLocalDate();
+  const yesterdayStr = addDaysToDateStr(todayStr, -1);
 
   for (const date of [yesterdayStr, todayStr]) {
     const isYesterday = date === yesterdayStr;
@@ -252,33 +256,27 @@ export default function App() {
 
   const handleTakeDose = (doseId: string, virtualDose?: DoseItem) => {
     const nowTime = new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
-    let targetMedId: string | undefined = virtualDose?.medicationId;
-    let shouldDecrementStock = false;
+    const existing = doses.find((d) => d.id === doseId);
+    const targetMedId = existing?.medicationId ?? virtualDose?.medicationId;
+    const shouldDecrementStock = existing ? existing.status !== 'taken' : Boolean(virtualDose);
 
     setDoses((prev) => {
-      const exists = prev.some((d) => d.id === doseId);
-      if (exists) {
-        return prev.map((d) => {
-          if (d.id === doseId) {
-            targetMedId = d.medicationId;
-            if (d.status !== 'taken') shouldDecrementStock = true;
-            return { ...d, status: 'taken', takenAt: nowTime, snoozedUntil: undefined };
-          }
-          return d;
-        });
+      if (prev.some((d) => d.id === doseId)) {
+        return prev.map((d) =>
+          d.id === doseId ? { ...d, status: 'taken', takenAt: nowTime, snoozedUntil: undefined } : d
+        );
       }
       if (virtualDose) {
-        shouldDecrementStock = true;
         return [...prev, { ...virtualDose, status: 'taken', takenAt: nowTime, snoozedUntil: undefined }];
       }
       return prev;
     });
 
-    if (targetMedId) {
+    if (targetMedId && shouldDecrementStock) {
       setMedications((prev) =>
         prev.map((m) => {
           if (m.id !== targetMedId || typeof m.stockQuantity !== 'number') return m;
-          const amount = shouldDecrementStock ? parseNumericDose(m.doseAmount) : parseNumericDose(m.doseAmount);
+          const amount = parseNumericDose(m.doseAmount);
           const next = Math.max(0, Number((m.stockQuantity - amount).toFixed(2)));
           return { ...m, stockQuantity: next };
         })
@@ -350,7 +348,9 @@ export default function App() {
     };
     setMedications((prev) => [...prev, newMed]);
 
-    const todayStr = new Date().toISOString().substring(0, 10);
+    const todayStr = formatLocalDate();
+    if (!isMedicationActiveOnDate(newMed, todayStr)) return;
+
     const therapy = therapies.find((t) => t.id === newMed.therapyId);
 
     const newDoses: DoseItem[] = newMed.times.map((time) => ({
@@ -430,11 +430,18 @@ export default function App() {
     setIsAddingProfile(false);
   };
 
-  const todayStr = new Date().toISOString().substring(0, 10);
-  const todayCompliance = useMemo(
-    () => calculateCompliance(doses.filter((d) => d.date === todayStr)),
-    [doses, todayStr]
-  );
+  const todayStr = formatLocalDate();
+  const todayCompliance = useMemo(() => {
+    const todayDoses = doses.filter((d) => {
+      if (d.date !== todayStr) return false;
+      if (activeProfileId === 'all') return true;
+      const med = medications.find((m) => m.id === d.medicationId);
+      const therapy = therapies.find((t) => t.id === d.therapyId);
+      const profId = d.profileId || med?.profileId || therapy?.profileId || 'self';
+      return profId === activeProfileId;
+    });
+    return calculateCompliance(todayDoses);
+  }, [doses, medications, therapies, todayStr, activeProfileId]);
 
   const cabinetAlerts = useMemo(
     () =>
@@ -451,9 +458,11 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
           {/* Left Zone: Brand */}
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-teal-700 text-white flex items-center justify-center shrink-0">
-              <Pill className="w-5 h-5" />
-            </div>
+            <img
+              src="/logo-icon.png"
+              alt="MedPlaner logo"
+              className="w-9 h-9 rounded-xl object-contain bg-white border border-slate-200/80 p-0.5 shrink-0"
+            />
             <div>
               <span className="font-extrabold text-base text-slate-900 tracking-tight block leading-none">
                 MedPlaner

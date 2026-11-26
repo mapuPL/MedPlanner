@@ -20,13 +20,26 @@ class _TherapiesScreenState extends State<TherapiesScreen> {
   @override
   void initState() {
     super.initState();
+    DatabaseService.instance.dataVersion.addListener(_onDatabaseChanged);
     _loadData();
   }
 
+  @override
+  void dispose() {
+    DatabaseService.instance.dataVersion.removeListener(_onDatabaseChanged);
+    super.dispose();
+  }
+
+  void _onDatabaseChanged() {
+    if (mounted) _loadData();
+  }
+
   Future<void> _loadData() async {
+    if (!mounted) return;
     setState(() => _isLoading = true);
     final therapies = await DatabaseService.instance.getTherapies();
     final medications = await DatabaseService.instance.getAllMedications();
+    if (!mounted) return;
     setState(() {
       _therapies = therapies;
       _medications = medications;
@@ -252,7 +265,9 @@ class _TherapiesScreenState extends State<TherapiesScreen> {
                                   onPressed: () async {
                                     await Navigator.push(
                                       context,
-                                      MaterialPageRoute(builder: (_) => const AddMedicationScreen()),
+                                      MaterialPageRoute(
+                                        builder: (_) => AddMedicationScreen(initialTherapyId: therapy.id),
+                                      ),
                                     );
                                     _loadData();
                                   },
