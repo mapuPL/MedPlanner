@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/medication.dart';
 import '../models/therapy.dart';
+import '../models/user_profile.dart';
 import '../services/database_service.dart';
+import '../widgets/profile_manager_sheet.dart';
 
 class CabinetScreen extends StatefulWidget {
   const CabinetScreen({super.key});
@@ -14,19 +16,24 @@ class CabinetScreen extends StatefulWidget {
 class _CabinetScreenState extends State<CabinetScreen> {
   List<Medication> _medications = [];
   List<Therapy> _therapies = [];
+  List<UserProfile> _profiles = [];
+  String? _selectedProfile;
   bool _isLoading = true;
   bool _showAlertsOnly = false;
 
   @override
   void initState() {
     super.initState();
+    _selectedProfile = DatabaseService.instance.selectedProfileNotifier.value;
     DatabaseService.instance.dataVersion.addListener(_onDatabaseChanged);
+    DatabaseService.instance.selectedProfileNotifier.addListener(_onSelectedProfileChanged);
     _loadData();
   }
 
   @override
   void dispose() {
     DatabaseService.instance.dataVersion.removeListener(_onDatabaseChanged);
+    DatabaseService.instance.selectedProfileNotifier.removeListener(_onSelectedProfileChanged);
     super.dispose();
   }
 
@@ -34,15 +41,24 @@ class _CabinetScreenState extends State<CabinetScreen> {
     if (mounted) _loadData();
   }
 
+  void _onSelectedProfileChanged() {
+    if (!mounted) return;
+    setState(() {
+      _selectedProfile = DatabaseService.instance.selectedProfileNotifier.value;
+    });
+  }
+
   Future<void> _loadData() async {
     if (!mounted) return;
     setState(() => _isLoading = true);
     final meds = await DatabaseService.instance.getAllMedications();
     final therapies = await DatabaseService.instance.getTherapies();
+    final profiles = await DatabaseService.instance.getProfiles();
     if (mounted) {
       setState(() {
         _medications = meds;
         _therapies = therapies;
+        _profiles = profiles;
         _isLoading = false;
       });
     }
@@ -147,8 +163,18 @@ class _CabinetScreenState extends State<CabinetScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final alertCount = _medications.where(_hasAlert).length;
-    final displayed = _showAlertsOnly ? _medications.where(_hasAlert).toList() : _medications;
+    final profileMeds = _selectedProfile == null
+        ? _medications
+        : _medications.where((med) {
+            final therapy = _therapies.cast<Therapy?>().firstWhere(
+                  (t) => t?.id == med.therapyId,
+                  orElse: () => null,
+                );
+            return (therapy?.profileName ?? 'Mój profil') == _selectedProfile;
+          }).toList();
+
+    final alertCount = profileMeds.where(_hasAlert).length;
+    final displayed = _showAlertsOnly ? profileMeds.where(_hasAlert).toList() : profileMeds;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF4F7F7),
@@ -166,33 +192,49 @@ class _CabinetScreenState extends State<CabinetScreen> {
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : displayed.isEmpty
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.inventory_2_outlined, size: 60, color: Colors.teal.shade200),
-                        const SizedBox(height: 12),
-                        Text(
-                          _showAlertsOnly ? 'Brak alertów w apteczce' : 'Apteczka jest pusta',
-                          style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 6),
-                        const Text(
-                          'Dodaj leki z określonym rozmiarem opakowania, aby śledzić zużycie i terminy ważności.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.grey, fontSize: 13),
-                        ),
-                      ],
+          : Column(
+              children: [
+                if (_profiles.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                    child: ProfileFilterBar(
+                      profiles: _profiles,
+                      selectedProfile: _selectedProfile,
+                      onSelected: (name) => DatabaseService.instance.setSelectedProfile(name),
+                      onManagePressed: () => ProfileManagerSheet.show(
+                        context,
+                        onProfileCreated: (newName) => DatabaseService.instance.setSelectedProfile(newName),
+                      ),
                     ),
                   ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: displayed.length,
-                  itemBuilder: (ctx, idx) {
+                Expanded(
+                  child: displayed.isEmpty
+                      ? Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.inventory_2_outlined, size: 60, color: Colors.teal.shade200),
+                                const SizedBox(height: 12),
+                                Text(
+                                  _showAlertsOnly ? 'Brak alertów w apteczce' : 'Apteczka jest pusta',
+                                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                                ),
+                                const SizedBox(height: 6),
+                                const Text(
+                                  'Dodaj leki z określonym rozmiarem opakowania, aby śledzić zużycie i terminy ważności.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(color: Colors.grey, fontSize: 13),
+                                ),
+                              ],
+                            ),
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: displayed.length,
+                          itemBuilder: (ctx, idx) {
                     final med = displayed[idx];
                     final therapy = _therapies.cast<Therapy?>().firstWhere(
                           (t) => t?.id == med.therapyId,
@@ -306,6 +348,9 @@ class _CabinetScreenState extends State<CabinetScreen> {
                     );
                   },
                 ),
+                ),
+              ],
+            ),
     );
   }
 }

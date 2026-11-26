@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import '../models/therapy.dart';
+import '../models/user_profile.dart';
 import '../services/database_service.dart';
+import '../widgets/profile_manager_sheet.dart';
 
 class AddTherapyScreen extends StatefulWidget {
   final Therapy? therapyToEdit;
@@ -21,12 +23,7 @@ class _AddTherapyScreenState extends State<AddTherapyScreen> {
   String _selectedColor = '#10B981';
   String _selectedProfile = 'Mój profil';
 
-  final List<String> _profileOptions = [
-    'Mój profil',
-    'Mama',
-    'Tata',
-    'Dziecko',
-  ];
+  List<UserProfile> _profiles = [];
 
   final List<String> _colorOptions = [
     '#10B981',
@@ -47,7 +44,24 @@ class _AddTherapyScreenState extends State<AddTherapyScreen> {
       _endDate = widget.therapyToEdit!.endDate;
       _selectedColor = widget.therapyToEdit!.colorHex;
       _selectedProfile = widget.therapyToEdit!.profileName;
+    } else if (DatabaseService.instance.selectedProfileNotifier.value != null) {
+      _selectedProfile = DatabaseService.instance.selectedProfileNotifier.value!;
     }
+    _loadProfiles();
+  }
+
+  Future<void> _loadProfiles({String? selectName}) async {
+    final loaded = await DatabaseService.instance.getProfiles();
+    if (!mounted) return;
+    setState(() {
+      _profiles = loaded;
+      final candidate = selectName ?? _selectedProfile;
+      if (loaded.any((p) => p.name == candidate)) {
+        _selectedProfile = candidate;
+      } else if (loaded.isNotEmpty) {
+        _selectedProfile = loaded.first.name;
+      }
+    });
   }
 
   @override
@@ -90,6 +104,11 @@ class _AddTherapyScreenState extends State<AddTherapyScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final profileNames = _profiles.map((p) => p.name).toList();
+    final dropdownValue = profileNames.contains(_selectedProfile)
+        ? _selectedProfile
+        : (profileNames.isNotEmpty ? profileNames.first : null);
+
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.therapyToEdit == null ? 'Nowa Terapia' : 'Edytuj Terapię'),
@@ -99,17 +118,54 @@ class _AddTherapyScreenState extends State<AddTherapyScreen> {
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
-            DropdownButtonFormField<String>(
-              value: _profileOptions.contains(_selectedProfile) ? _selectedProfile : 'Mój profil',
-              decoration: const InputDecoration(
-                labelText: 'Profil osoby',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.person_outline),
-              ),
-              items: _profileOptions.map((p) => DropdownMenuItem(value: p, child: Text(p))).toList(),
-              onChanged: (v) {
-                if (v != null) setState(() => _selectedProfile = v);
-              },
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    value: dropdownValue,
+                    decoration: const InputDecoration(
+                      labelText: 'Profil osoby',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.person_outline),
+                    ),
+                    items: _profiles.map((p) {
+                      return DropdownMenuItem(
+                        value: p.name,
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 10,
+                              height: 10,
+                              decoration: BoxDecoration(
+                                color: parseProfileColor(p.colorHex),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(p.name),
+                          ],
+                        ),
+                      );
+                    }).toList(),
+                    onChanged: (v) {
+                      if (v != null) setState(() => _selectedProfile = v);
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton.filledTonal(
+                  icon: const Icon(Icons.person_add_alt_1),
+                  tooltip: 'Dodaj lub edytuj użytkownika',
+                  onPressed: () async {
+                    String? createdName;
+                    await ProfileManagerSheet.show(
+                      context,
+                      onProfileCreated: (name) => createdName = name,
+                    );
+                    await _loadProfiles(selectName: createdName);
+                  },
+                ),
+              ],
             ),
             const SizedBox(height: 16),
             TextFormField(

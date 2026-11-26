@@ -4,9 +4,11 @@ import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:uuid/uuid.dart';
 import '../models/therapy.dart';
 import '../models/medication.dart';
 import '../models/dose_log.dart';
+import '../models/user_profile.dart';
 import 'notification_service.dart';
 
 class LocalBackupCandidate {
@@ -52,8 +54,10 @@ class DatabaseService {
   static Database? _database;
 
   final ValueNotifier<int> dataVersion = ValueNotifier<int>(0);
+  final ValueNotifier<String?> selectedProfileNotifier = ValueNotifier<String?>(null);
 
   void notifyDataChanged() => dataVersion.value++;
+  void setSelectedProfile(String? profileName) => selectedProfileNotifier.value = profileName;
 
   static String formatLocalDate(DateTime date) {
     final y = date.year.toString().padLeft(4, '0');
@@ -266,6 +270,7 @@ class DatabaseService {
 
     await dbFile.writeAsBytes(bytes, flush: true);
     await reloadDatabase();
+    selectedProfileNotifier.value = null;
     await NotificationService.instance.rescheduleAllUpcomingDoses();
     notifyDataChanged();
     return true;
@@ -285,8 +290,18 @@ class DatabaseService {
 
     return await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: (db, version) async {
+        await db.execute('''
+          CREATE TABLE profiles (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            color_hex TEXT NOT NULL,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+          )
+        ''');
+
         await db.execute('''
           CREATE TABLE therapies (
             id TEXT PRIMARY KEY,
@@ -341,12 +356,13 @@ class DatabaseService {
         ''');
 
         await db.execute('CREATE INDEX idx_dose_logs_date ON dose_logs (scheduled_date)');
+        await _ensureProfilesReady(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         await _ensureSchemaColumns(db);
       },
       onOpen: (db) async {
-        // Zapewnia bezbłędne działanie nawet po przywróceniu starszej kopii v1 z pliku .db
+        // Zapewnia bezbłędne działanie nawet po przywróceniu starszej kopii v1/v2 z pliku .db
         await _ensureSchemaColumns(db);
       },
     );
@@ -366,6 +382,179 @@ class DatabaseService {
     await addColumnIfMissing('medications', 'package_size', 'REAL');
     await addColumnIfMissing('medications', 'low_stock_threshold', 'REAL DEFAULT 5');
     await addColumnIfMissing('medications', 'expiry_date', 'TEXT');
+    await _ensureProfilesReady(db);
+  }
+
+  Future<void> _ensureProfilesReady(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS profiles (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        color_hex TEXT NOT NULL,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      )
+    ''');
+
+    final countRes = await db.rawQuery('SELECT COUNT(*) AS cnt FROM profiles');
+    final existingCount = Sqflite.firstIntValue(countRes) ?? 0;
+
+    if (existingCount == 0) {
+      final now = DateTime.now();
+      final defaults = [
+        {'id': 'prof_self', 'name': 'Mój profil', 'color_hex': '#0F766E', 'is_default': 1, 'offset': 0},
+        {'id': 'prof_mom', 'name': 'Mama', 'color_hex': '#8B5CF6', 'is_default': 0, 'offset': 1},
+        {'id': 'prof_dad', 'name': 'Tata', 'color_hex': '#3B82F6', 'is_default': 0, 'offset': 2},
+        {'id': 'prof_kid', 'name': 'Dziecko', 'color_hex': '#EC4899', 'is_default': 0, 'offset': 3},
+      ];
+      for (final d in defaults) {
+        await db.insert(
+          'profiles',
+          {
+            'id': d['id'],
+            'name': d['name'],
+            'color_hex': d['color_hex'],
+            'is_default': d['is_default'],
+            'created_at': now.add(Duration(milliseconds: d['offset'] as int)).toIso8601String(),
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+    }
+
+    // Zsynchronizuj niestandardowe nazwy profili z istniejących terapii (np. po imporcie kopii)
+    final therapyProfiles = await db.rawQuery(
+      "SELECT DISTINCT profile_name FROM therapies WHERE profile_name IS NOT NULL AND TRIM(profile_name) != ''",
+    );
+    for (final row in therapyProfiles) {
+      final pName = (row['profile_name'] as String).trim();
+      final existing = await db.query(
+        'profiles',
+        where: 'LOWER(name) = LOWER(?)',
+        whereArgs: [pName],
+        limit: 1,
+      );
+      if (existing.isEmpty) {
+        await db.insert(
+          'profiles',
+          {
+            'id': const Uuid().v4(),
+            'name': pName,
+            'color_hex': '#0F766E',
+            'is_default': 0,
+            'created_at': DateTime.now().toIso8601String(),
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+    }
+  }
+
+  Future<List<UserProfile>> getProfiles() async {
+    final db = await database;
+    final maps = await db.query('profiles', orderBy: 'is_default DESC, created_at ASC');
+    return maps.map((m) => UserProfile.fromMap(m)).toList();
+  }
+
+  Future<UserProfile> insertProfile(String name, {String colorHex = '#0F766E'}) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      throw Exception('Nazwa użytkownika nie może być pusta.');
+    }
+
+    final db = await database;
+    final existing = await db.query(
+      'profiles',
+      where: 'LOWER(name) = LOWER(?)',
+      whereArgs: [trimmed],
+      limit: 1,
+    );
+    if (existing.isNotEmpty) {
+      throw Exception('Użytkownik "$trimmed" już istnieje.');
+    }
+
+    final profile = UserProfile(
+      id: const Uuid().v4(),
+      name: trimmed,
+      colorHex: colorHex,
+      isDefault: false,
+      createdAt: DateTime.now(),
+    );
+    await db.insert('profiles', profile.toMap());
+    notifyDataChanged();
+    return profile;
+  }
+
+  Future<void> updateProfile(
+    UserProfile existing, {
+    required String name,
+    required String colorHex,
+  }) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      throw Exception('Nazwa użytkownika nie może być pusta.');
+    }
+
+    final db = await database;
+    final duplicate = await db.query(
+      'profiles',
+      where: 'LOWER(name) = LOWER(?) AND id != ?',
+      whereArgs: [trimmed, existing.id],
+      limit: 1,
+    );
+    if (duplicate.isNotEmpty) {
+      throw Exception('Użytkownik "$trimmed" już istnieje.');
+    }
+
+    await db.transaction((txn) async {
+      await txn.update(
+        'profiles',
+        {'name': trimmed, 'color_hex': colorHex},
+        where: 'id = ?',
+        whereArgs: [existing.id],
+      );
+      if (existing.name != trimmed) {
+        await txn.update(
+          'therapies',
+          {'profile_name': trimmed},
+          where: 'profile_name = ?',
+          whereArgs: [existing.name],
+        );
+      }
+    });
+
+    if (selectedProfileNotifier.value == existing.name) {
+      selectedProfileNotifier.value = trimmed;
+    }
+    notifyDataChanged();
+  }
+
+  Future<void> deleteProfile(UserProfile profile) async {
+    final db = await database;
+    final all = await getProfiles();
+    if (all.length <= 1) {
+      throw Exception('Musi pozostać co najmniej jeden profil użytkownika.');
+    }
+
+    final fallback = all.firstWhere(
+      (p) => p.id != profile.id && p.isDefault,
+      orElse: () => all.firstWhere((p) => p.id != profile.id),
+    );
+
+    await db.transaction((txn) async {
+      await txn.update(
+        'therapies',
+        {'profile_name': fallback.name},
+        where: 'profile_name = ?',
+        whereArgs: [profile.name],
+      );
+      await txn.delete('profiles', where: 'id = ?', whereArgs: [profile.id]);
+    });
+
+    if (selectedProfileNotifier.value == profile.name) {
+      selectedProfileNotifier.value = null;
+    }
+    notifyDataChanged();
   }
 
   Future<void> insertTherapy(Therapy therapy) async {
@@ -452,7 +641,8 @@ class DatabaseService {
              m.dose_amount, 
              m.type AS medication_type,
              t.name AS therapy_name, 
-             t.color_hex AS therapy_color_hex
+             t.color_hex AS therapy_color_hex,
+             t.profile_name AS profile_name
       FROM dose_logs dl
       JOIN medications m ON dl.medication_id = m.id
       JOIN therapies t ON dl.therapy_id = t.id

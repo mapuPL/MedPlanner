@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/dose_log.dart';
+import '../models/user_profile.dart';
 import '../services/database_service.dart';
 import '../services/notification_service.dart';
+import '../widgets/profile_manager_sheet.dart';
 import '../widgets/snooze_bottom_sheet.dart';
 import 'add_medication_screen.dart';
 import 'backup_sync_screen.dart';
@@ -17,6 +19,8 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   DateTime _currentDate = DateTime.now();
   List<DoseLog> _doses = [];
+  List<UserProfile> _profiles = [];
+  String? _selectedProfile;
   bool _isLoading = true;
 
   // Kontroler wyszukiwania leków i terapii na dziś
@@ -26,13 +30,16 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _selectedProfile = DatabaseService.instance.selectedProfileNotifier.value;
     DatabaseService.instance.dataVersion.addListener(_onDatabaseChanged);
+    DatabaseService.instance.selectedProfileNotifier.addListener(_onSelectedProfileChanged);
     _loadDoses();
   }
 
   @override
   void dispose() {
     DatabaseService.instance.dataVersion.removeListener(_onDatabaseChanged);
+    DatabaseService.instance.selectedProfileNotifier.removeListener(_onSelectedProfileChanged);
     _searchController.dispose();
     super.dispose();
   }
@@ -41,13 +48,22 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) _loadDoses();
   }
 
+  void _onSelectedProfileChanged() {
+    if (!mounted) return;
+    setState(() {
+      _selectedProfile = DatabaseService.instance.selectedProfileNotifier.value;
+    });
+  }
+
   Future<void> _loadDoses() async {
     if (!mounted) return;
     setState(() => _isLoading = true);
     final doses = await DatabaseService.instance.getDosesForDate(_currentDate);
+    final profiles = await DatabaseService.instance.getProfiles();
     if (!mounted) return;
     setState(() {
       _doses = doses;
+      _profiles = profiles;
       _isLoading = false;
     });
   }
@@ -55,8 +71,11 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final dateFormat = DateFormat('EEEE, d MMMM', 'pl_PL');
-    final total = _doses.length;
-    final taken = _doses.where((d) => d.status == DoseStatus.taken).length;
+    final profileDoses = _selectedProfile == null
+        ? _doses
+        : _doses.where((d) => (d.profileName ?? 'Mój profil') == _selectedProfile).toList();
+    final total = profileDoses.length;
+    final taken = profileDoses.where((d) => d.status == DoseStatus.taken).length;
     final progress = total > 0 ? (taken / total) : 1.0;
 
     // 7-dniowy pasek wyboru dnia (-2 do +4)
@@ -64,12 +83,13 @@ class _HomeScreenState extends State<HomeScreen> {
     final weekDays = List.generate(7, (i) => DateTime(today.year, today.month, today.day).add(Duration(days: i - 2)));
 
     // Filtrowanie dawek według wpisanej frazy wyszukiwania
-    final filteredDoses = _doses.where((d) {
+    final filteredDoses = profileDoses.where((d) {
       if (_searchQuery.trim().isEmpty) return true;
       final q = _searchQuery.toLowerCase().trim();
       final name = (d.medicationName ?? '').toLowerCase();
       final therapy = (d.therapyName ?? '').toLowerCase();
-      return name.contains(q) || therapy.contains(q);
+      final profile = (d.profileName ?? '').toLowerCase();
+      return name.contains(q) || therapy.contains(q) || profile.contains(q);
     }).toList();
 
     // Podział przefiltrowanych dawek na pory dnia
@@ -173,7 +193,20 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-                const SizedBox(height: 14),
+                const SizedBox(height: 12),
+
+                if (_profiles.isNotEmpty) ...[
+                  ProfileFilterBar(
+                    profiles: _profiles,
+                    selectedProfile: _selectedProfile,
+                    onSelected: (name) => DatabaseService.instance.setSelectedProfile(name),
+                    onManagePressed: () => ProfileManagerSheet.show(
+                      context,
+                      onProfileCreated: (newName) => DatabaseService.instance.setSelectedProfile(newName),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
 
                 // Karta podsumowania dnia z okrągłym pierścieniem realizacji (Dawko style)
                 Container(
@@ -482,7 +515,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      '${dose.doseAmount ?? "1"} · ${dose.therapyName ?? "Terapia"}',
+                      _selectedProfile == null
+                          ? '${dose.doseAmount ?? "1"} · ${dose.therapyName ?? "Terapia"} · ${dose.profileName ?? "Mój profil"}'
+                          : '${dose.doseAmount ?? "1"} · ${dose.therapyName ?? "Terapia"}',
                       style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
                     ),
                   ],

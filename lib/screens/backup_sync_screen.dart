@@ -236,14 +236,15 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
   /// Wybór pliku .db z dowolnego miejsca na telefonie (Pobrane, Dysk, Dokumenty) po reinstalacji!
   Future<void> _handlePickAndRestoreBackup() async {
     try {
-      final picked = await FilePicker.pickFiles(
+      final PlatformFile? picked = await FilePicker.pickFile(
         dialogTitle: 'Wskaż plik kopii (medplaner-backup.db)',
         type: FileType.any,
       );
 
-      if (picked == null || picked.files.isEmpty) return;
-      final selectedPath = picked.files.single.path;
+      if (picked == null) return;
+      final selectedPath = picked.path;
       if (selectedPath == null) {
+        if (!mounted) return;
         setState(() {
           _statusMessage = 'Nie udało się odczytać ścieżki wybranego pliku.';
           _isSuccessMessage = false;
@@ -251,8 +252,10 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
         return;
       }
 
-      await _confirmAndRestorePath(selectedPath, picked.files.single.name);
+      if (!mounted) return;
+      await _confirmAndRestorePath(selectedPath, picked.name);
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _statusMessage = 'Błąd wyboru pliku kopii: $e';
         _isSuccessMessage = false;

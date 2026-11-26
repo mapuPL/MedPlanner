@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import '../models/therapy.dart';
 import '../models/medication.dart';
+import '../models/user_profile.dart';
 import '../services/database_service.dart';
+import '../widgets/profile_manager_sheet.dart';
 import 'add_therapy_screen.dart';
 import 'add_medication_screen.dart';
 
@@ -15,18 +17,23 @@ class TherapiesScreen extends StatefulWidget {
 class _TherapiesScreenState extends State<TherapiesScreen> {
   List<Therapy> _therapies = [];
   List<Medication> _medications = [];
+  List<UserProfile> _profiles = [];
+  String? _selectedProfile;
   bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
+    _selectedProfile = DatabaseService.instance.selectedProfileNotifier.value;
     DatabaseService.instance.dataVersion.addListener(_onDatabaseChanged);
+    DatabaseService.instance.selectedProfileNotifier.addListener(_onSelectedProfileChanged);
     _loadData();
   }
 
   @override
   void dispose() {
     DatabaseService.instance.dataVersion.removeListener(_onDatabaseChanged);
+    DatabaseService.instance.selectedProfileNotifier.removeListener(_onSelectedProfileChanged);
     super.dispose();
   }
 
@@ -34,15 +41,24 @@ class _TherapiesScreenState extends State<TherapiesScreen> {
     if (mounted) _loadData();
   }
 
+  void _onSelectedProfileChanged() {
+    if (!mounted) return;
+    setState(() {
+      _selectedProfile = DatabaseService.instance.selectedProfileNotifier.value;
+    });
+  }
+
   Future<void> _loadData() async {
     if (!mounted) return;
     setState(() => _isLoading = true);
     final therapies = await DatabaseService.instance.getTherapies();
     final medications = await DatabaseService.instance.getAllMedications();
+    final profiles = await DatabaseService.instance.getProfiles();
     if (!mounted) return;
     setState(() {
       _therapies = therapies;
       _medications = medications;
+      _profiles = profiles;
       _isLoading = false;
     });
   }
@@ -128,11 +144,23 @@ class _TherapiesScreenState extends State<TherapiesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final displayedTherapies = _selectedProfile == null
+        ? _therapies
+        : _therapies.where((t) => t.profileName == _selectedProfile).toList();
+
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
         title: const Text('Moje Terapie', style: TextStyle(fontWeight: FontWeight.bold)),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.people_outline, color: Colors.teal),
+            tooltip: 'Zarządzaj użytkownikami',
+            onPressed: () => ProfileManagerSheet.show(
+              context,
+              onProfileCreated: (newName) => DatabaseService.instance.setSelectedProfile(newName),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.add_circle, color: Colors.teal),
             tooltip: 'Dodaj terapię',
@@ -142,46 +170,64 @@ class _TherapiesScreenState extends State<TherapiesScreen> {
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : _therapies.isEmpty
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24.0),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.healing_outlined, size: 64, color: Colors.teal.shade200),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'Brak zdefiniowanych terapii',
-                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 8),
-                        const Text(
-                          'Utwórz pierwszą terapię (np. "Antybiotyk", "Krople do oczu"), aby przypisywać do niej leki.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.grey),
-                        ),
-                        const SizedBox(height: 20),
-                        ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.teal,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          ),
-                          onPressed: () => _openAddTherapy(),
-                          icon: const Icon(Icons.add),
-                          label: const Text('Dodaj pierwszą terapię'),
-                        ),
-                      ],
+          : Column(
+              children: [
+                if (_profiles.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                    child: ProfileFilterBar(
+                      profiles: _profiles,
+                      selectedProfile: _selectedProfile,
+                      onSelected: (name) => DatabaseService.instance.setSelectedProfile(name),
+                      onManagePressed: () => ProfileManagerSheet.show(
+                        context,
+                        onProfileCreated: (newName) => DatabaseService.instance.setSelectedProfile(newName),
+                      ),
                     ),
                   ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _therapies.length,
-                  itemBuilder: (ctx, i) {
-                    final therapy = _therapies[i];
+                Expanded(
+                  child: displayedTherapies.isEmpty
+                      ? Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24.0),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.healing_outlined, size: 64, color: Colors.teal.shade200),
+                                const SizedBox(height: 16),
+                                Text(
+                                  _selectedProfile == null
+                                      ? 'Brak zdefiniowanych terapii'
+                                      : 'Brak terapii dla: $_selectedProfile',
+                                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                ),
+                                const SizedBox(height: 8),
+                                const Text(
+                                  'Utwórz pierwszą terapię (np. "Antybiotyk", "Krople do oczu"), aby przypisywać do niej leki.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(color: Colors.grey),
+                                ),
+                                const SizedBox(height: 20),
+                                ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.teal,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  ),
+                                  onPressed: () => _openAddTherapy(),
+                                  icon: const Icon(Icons.add),
+                                  label: const Text('Dodaj pierwszą terapię'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: displayedTherapies.length,
+                          itemBuilder: (ctx, i) {
+                            final therapy = displayedTherapies[i];
                     final meds = _medications.where((m) => m.therapyId == therapy.id).toList();
                     Color therapyColor;
                     try {
@@ -331,6 +377,9 @@ class _TherapiesScreenState extends State<TherapiesScreen> {
                     );
                   },
                 ),
+                ),
+              ],
+            ),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: Colors.teal,
         foregroundColor: Colors.white,

@@ -69,7 +69,11 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
             _selectedTherapyId == null) {
           _selectedTherapyId = widget.initialTherapyId;
         } else if (_selectedTherapyId == null || !list.any((t) => t.id == _selectedTherapyId)) {
-          _selectedTherapyId = list.first.id;
+          final activeProfile = DatabaseService.instance.selectedProfileNotifier.value;
+          final matching = activeProfile != null
+              ? list.cast<Therapy?>().firstWhere((t) => t?.profileName == activeProfile, orElse: () => null)
+              : null;
+          _selectedTherapyId = (matching ?? list.first).id;
         }
       } else {
         _selectedTherapyId = null;
@@ -229,7 +233,10 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
                     ),
                     value: _selectedTherapyId,
                     items: _therapies.map((t) {
-                      return DropdownMenuItem(value: t.id, child: Text(t.name));
+                      return DropdownMenuItem(
+                        value: t.id,
+                        child: Text('${t.name} (${t.profileName})', overflow: TextOverflow.ellipsis),
+                      );
                     }).toList(),
                     onChanged: (val) => setState(() => _selectedTherapyId = val),
                     validator: (v) => v == null ? 'Wybierz terapię' : null,

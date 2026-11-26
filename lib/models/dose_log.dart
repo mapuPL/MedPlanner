@@ -29,6 +29,7 @@ class DoseLog {
   final String? doseAmount;
   final String? medicationType;
   final String? therapyColorHex;
+  final String? profileName;
 
   DoseLog({
     required this.id,
@@ -46,6 +47,7 @@ class DoseLog {
     this.doseAmount,
     this.medicationType,
     this.therapyColorHex,
+    this.profileName,
   });
 
   String get effectiveTime => (status == DoseStatus.snoozed && snoozedUntil != null) ? snoozedUntil! : scheduledTime;
@@ -84,6 +86,7 @@ class DoseLog {
       doseAmount: map['dose_amount'] as String?,
       medicationType: map['medication_type'] as String?,
       therapyColorHex: map['therapy_color_hex'] as String?,
+      profileName: map['profile_name'] as String?,
     );
   }
 }

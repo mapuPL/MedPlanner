@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/dose_log.dart';
+import '../models/user_profile.dart';
 import '../services/database_service.dart';
+import '../widgets/profile_manager_sheet.dart';
 
 class CalendarScreen extends StatefulWidget {
   const CalendarScreen({super.key});
@@ -13,18 +15,23 @@ class CalendarScreen extends StatefulWidget {
 class _CalendarScreenState extends State<CalendarScreen> {
   DateTime _selectedDate = DateTime.now();
   List<DoseLog> _doses = [];
+  List<UserProfile> _profiles = [];
+  String? _selectedProfile;
   bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
+    _selectedProfile = DatabaseService.instance.selectedProfileNotifier.value;
     DatabaseService.instance.dataVersion.addListener(_onDatabaseChanged);
+    DatabaseService.instance.selectedProfileNotifier.addListener(_onSelectedProfileChanged);
     _loadDosesForSelectedDate();
   }
 
   @override
   void dispose() {
     DatabaseService.instance.dataVersion.removeListener(_onDatabaseChanged);
+    DatabaseService.instance.selectedProfileNotifier.removeListener(_onSelectedProfileChanged);
     super.dispose();
   }
 
@@ -32,13 +39,22 @@ class _CalendarScreenState extends State<CalendarScreen> {
     if (mounted) _loadDosesForSelectedDate();
   }
 
+  void _onSelectedProfileChanged() {
+    if (!mounted) return;
+    setState(() {
+      _selectedProfile = DatabaseService.instance.selectedProfileNotifier.value;
+    });
+  }
+
   Future<void> _loadDosesForSelectedDate() async {
     if (!mounted) return;
     setState(() => _isLoading = true);
     final doses = await DatabaseService.instance.getDosesForDate(_selectedDate);
+    final profiles = await DatabaseService.instance.getProfiles();
     if (!mounted) return;
     setState(() {
       _doses = doses;
+      _profiles = profiles;
       _isLoading = false;
     });
   }
@@ -46,9 +62,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
   @override
   Widget build(BuildContext context) {
     final dateStr = DateFormat('d MMMM y', 'pl_PL').format(_selectedDate);
+    final profileDoses = _selectedProfile == null
+        ? _doses
+        : _doses.where((d) => (d.profileName ?? 'Mój profil') == _selectedProfile).toList();
 
     final Map<String, List<DoseLog>> dosesByTherapy = {};
-    for (final d in _doses) {
+    for (final d in profileDoses) {
       final th = d.therapyName ?? 'Pozostałe';
       dosesByTherapy.putIfAbsent(th, () => []).add(d);
     }
@@ -87,10 +106,24 @@ class _CalendarScreenState extends State<CalendarScreen> {
             ),
           ),
           const Divider(height: 1),
+          if (_profiles.isNotEmpty)
+            Container(
+              color: const Color(0xFFF4F7F7),
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+              child: ProfileFilterBar(
+                profiles: _profiles,
+                selectedProfile: _selectedProfile,
+                onSelected: (name) => DatabaseService.instance.setSelectedProfile(name),
+                onManagePressed: () => ProfileManagerSheet.show(
+                  context,
+                  onProfileCreated: (newName) => DatabaseService.instance.setSelectedProfile(newName),
+                ),
+              ),
+            ),
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
-                : _doses.isEmpty
+                : profileDoses.isEmpty
                     ? Center(
                         child: Text(
                           'Brak zaplanowanych leków w dniu $dateStr.',
@@ -102,6 +135,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         children: dosesByTherapy.entries.map((entry) {
                           final therapyName = entry.key;
                           final doses = entry.value;
+                          final therapyProfile = doses.first.profileName;
                           final takenCount = doses.where((d) => d.status == DoseStatus.taken).length;
                           final allTaken = takenCount == doses.length;
                           final statusLabel = allTaken
@@ -121,7 +155,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                     children: [
                                       Expanded(
                                         child: Text(
-                                          therapyName,
+                                          (_selectedProfile == null && therapyProfile != null)
+                                              ? '$therapyName · $therapyProfile'
+                                              : therapyName,
                                           style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                                         ),
                                       ),
