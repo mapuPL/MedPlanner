@@ -4,11 +4,16 @@ import {
   Code2,
   Download,
   ShieldCheck,
-  Package,
   Users,
   Plus,
   AlertTriangle,
   CheckCircle2,
+  Pencil,
+  Trash2,
+  Check,
+  AlertCircle,
+  SlidersHorizontal,
+  FileText,
 } from 'lucide-react';
 import {
   Therapy,
@@ -16,6 +21,7 @@ import {
   DoseItem,
   DoseStatus,
   FamilyProfile,
+  MedicationChangeRecord,
   calculateSnoozeTime,
   parseNumericDose,
   evaluateCabinetStatus,
@@ -23,12 +29,25 @@ import {
   formatLocalDate,
   addDaysToDateStr,
   isMedicationActiveOnDate,
+  isDuplicateProfileName,
+  refreshDosesAfterMedicationUpdate,
+  buildDosesForDate,
+  undoDoseStatusResult,
+  resolveProfileId,
+  applyBackupImport,
+  buildMedicationChangeRecord,
+  buildTherapyStatusChangeRecords,
   MEDICATION_TYPE_LABELS,
 } from './utils/medicationLogic';
-import { PhoneSimulator } from './components/PhoneSimulator';
+import { PhoneSimulator, SimulatorTab } from './components/PhoneSimulator';
 import { ProjectIdxStudio } from './components/ProjectIdxStudio';
-import { MedicineCabinetView } from './components/MedicineCabinetView';
 import { MedPlanerBackupPayload } from './components/BackupSyncView';
+import { TherapyPdfReportModal } from './components/TherapyPdfReportModal';
+import {
+  ProfileManagerModal,
+  PROFILE_COLOR_PALETTE,
+  PROFILE_RELATION_OPTIONS,
+} from './components/ProfileManagerModal';
 import { downloadFlutterProjectZip } from './utils/zipExport';
 
 const INITIAL_PROFILES: FamilyProfile[] = [
@@ -145,6 +164,23 @@ const INITIAL_MEDICATIONS: Medication[] = [
   },
 ];
 
+const INITIAL_MED_CHANGES: MedicationChangeRecord[] = [
+  {
+    id: 'chg-init-1',
+    medicationId: 'med-3',
+    therapyId: 'th-3',
+    profileId: 'self',
+    medicationName: 'Acard 75 mg',
+    changedAt: `${addDaysToDateStr(BASE_TODAY, -6)}T09:30:00.000Z`,
+    previousDose: '0.5 tabl. (13:00)',
+    newDose: '1 tabl. (13:00)',
+    previousTimes: ['13:00'],
+    newTimes: ['13:00'],
+    changeType: 'dose_change',
+    changeReason: 'Kontrolna wizyta kardiologiczna – ustalenie dawki podtrzymującej',
+  },
+];
+
 function generateSampleDoses(therapies: Therapy[], medications: Medication[]): DoseItem[] {
   const doses: DoseItem[] = [];
   const todayStr = formatLocalDate();
@@ -197,10 +233,27 @@ function generateSampleDoses(therapies: Therapy[], medications: Medication[]): D
 }
 
 export default function App() {
-  const [viewMode, setViewMode] = useState<'simulator' | 'cabinet' | 'code'>('simulator');
+  const [viewMode, setViewMode] = useState<'simulator' | 'code'>('simulator');
+  const [simulatorTab, setSimulatorTab] = useState<SimulatorTab>('today');
   const [activeProfileId, setActiveProfileId] = useState<string>('all');
+  const [sidebarShowAllProfiles, setSidebarShowAllProfiles] = useState(false);
+
+  useEffect(() => {
+    setSidebarShowAllProfiles(false);
+  }, [activeProfileId]);
+
+  // Inline sidebar add profile form state
   const [isAddingProfile, setIsAddingProfile] = useState(false);
   const [newProfileName, setNewProfileName] = useState('');
+  const [newProfileRelation, setNewProfileRelation] = useState('Rodzina');
+  const [newProfileColor, setNewProfileColor] = useState(PROFILE_COLOR_PALETTE[0]);
+  const [profileFormError, setProfileFormError] = useState('');
+
+  // Full Profile Manager modal state (triggered from sidebar)
+  const [isSidebarProfileManagerOpen, setIsSidebarProfileManagerOpen] = useState(false);
+  const [sidebarEditProfileId, setSidebarEditProfileId] = useState<string | null>(null);
+  const [sidebarDeleteProfileId, setSidebarDeleteProfileId] = useState<string | null>(null);
+  const [isDesktopPdfReportOpen, setIsDesktopPdfReportOpen] = useState(false);
 
   const [profiles, setProfiles] = useState<FamilyProfile[]>(() => {
     try {
@@ -238,6 +291,15 @@ export default function App() {
     }
   });
 
+  const [medicationChanges, setMedicationChanges] = useState<MedicationChangeRecord[]>(() => {
+    try {
+      const saved = localStorage.getItem('medplaner_med_changes');
+      return saved ? JSON.parse(saved) : INITIAL_MED_CHANGES;
+    } catch {
+      return INITIAL_MED_CHANGES;
+    }
+  });
+
   useEffect(() => {
     localStorage.setItem('medplaner_profiles', JSON.stringify(profiles));
   }, [profiles]);
@@ -253,6 +315,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('medplaner_doses', JSON.stringify(doses));
   }, [doses]);
+
+  useEffect(() => {
+    localStorage.setItem('medplaner_med_changes', JSON.stringify(medicationChanges));
+  }, [medicationChanges]);
 
   const handleTakeDose = (doseId: string, virtualDose?: DoseItem) => {
     const nowTime = new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
@@ -327,6 +393,30 @@ export default function App() {
     });
   };
 
+  const handleUndoDose = (doseId: string) => {
+    const result = undoDoseStatusResult(doses, medications, doseId);
+    setDoses(result.doses);
+    setMedications(result.medications);
+  };
+
+  const handleUpdateDoseNote = (
+    doseId: string,
+    note: string | undefined,
+    virtualDose?: DoseItem
+  ) => {
+    const cleaned = note?.trim() ? note.trim() : undefined;
+    setDoses((prev) => {
+      const exists = prev.some((d) => d.id === doseId);
+      if (exists) {
+        return prev.map((d) => (d.id === doseId ? { ...d, note: cleaned } : d));
+      }
+      if (virtualDose) {
+        return [...prev, { ...virtualDose, note: cleaned }];
+      }
+      return prev;
+    });
+  };
+
   const handleDeleteMedication = (medicationId: string) => {
     setMedications((prev) => prev.filter((m) => m.id !== medicationId));
     setDoses((prev) => prev.filter((d) => d.medicationId !== medicationId));
@@ -341,6 +431,58 @@ export default function App() {
     setTherapies((prev) => [newTherapy, ...prev]);
   };
 
+  const handleUpdateTherapy = (updatedTherapy: Therapy) => {
+    setTherapies((prev) =>
+      prev.map((t) => (t.id === updatedTherapy.id ? updatedTherapy : t))
+    );
+    setMedications((prev) =>
+      prev.map((m) =>
+        m.therapyId === updatedTherapy.id
+          ? { ...m, profileId: updatedTherapy.profileId || m.profileId }
+          : m
+      )
+    );
+    setDoses((prev) =>
+      prev.map((d) =>
+        d.therapyId === updatedTherapy.id
+          ? {
+              ...d,
+              therapyName: updatedTherapy.name,
+              therapyColor: updatedTherapy.color,
+              profileId: updatedTherapy.profileId || d.profileId,
+            }
+          : d
+      )
+    );
+  };
+
+  const handleToggleTherapyActive = (therapyId: string) => {
+    const target = therapies.find((t) => t.id === therapyId);
+    if (target) {
+      const nextIsActive = !target.isActive;
+      const statusAudit = buildTherapyStatusChangeRecords({
+        therapy: target,
+        medications,
+        nextIsActive,
+      });
+      setMedicationChanges((prev) => [...prev, ...statusAudit]);
+    }
+    setTherapies((prev) =>
+      prev.map((t) => (t.id === therapyId ? { ...t, isActive: !t.isActive } : t))
+    );
+  };
+
+  const handleDeleteTherapy = (therapyId: string) => {
+    const removedMedIds = new Set(
+      medications.filter((m) => m.therapyId === therapyId).map((m) => m.id)
+    );
+    setTherapies((prev) => prev.filter((t) => t.id !== therapyId));
+    setMedications((prev) => prev.filter((m) => m.therapyId !== therapyId));
+    setDoses((prev) =>
+      prev.filter((d) => d.therapyId !== therapyId && !removedMedIds.has(d.medicationId))
+    );
+  };
+
   const handleAddMedication = (newMedData: Omit<Medication, 'id'>) => {
     const newMed: Medication = {
       ...newMedData,
@@ -349,9 +491,8 @@ export default function App() {
     setMedications((prev) => [...prev, newMed]);
 
     const todayStr = formatLocalDate();
-    if (!isMedicationActiveOnDate(newMed, todayStr)) return;
-
     const therapy = therapies.find((t) => t.id === newMed.therapyId);
+    if (!isMedicationActiveOnDate(newMed, todayStr, therapy)) return;
 
     const newDoses: DoseItem[] = newMed.times.map((time) => ({
       id: `${newMed.id}_${todayStr}_${time.replace(':', '')}`,
@@ -370,6 +511,29 @@ export default function App() {
     }));
 
     setDoses((prev) => [...prev, ...newDoses]);
+  };
+
+  const handleUpdateMedication = (updatedMed: Medication, changeReason?: string) => {
+    const prevMed = medications.find((m) => m.id === updatedMed.id);
+    if (prevMed) {
+      const prevTherapy = therapies.find((t) => t.id === prevMed.therapyId);
+      const nextTherapy = therapies.find((t) => t.id === updatedMed.therapyId);
+      const changeRecord = buildMedicationChangeRecord({
+        prevMed,
+        nextMed: updatedMed,
+        prevTherapy,
+        nextTherapy,
+        changeReason,
+      });
+      if (changeRecord) {
+        setMedicationChanges((prev) => [...prev, changeRecord]);
+      }
+    }
+
+    setMedications((prev) => prev.map((m) => (m.id === updatedMed.id ? updatedMed : m)));
+    const therapy = therapies.find((t) => t.id === updatedMed.therapyId);
+    const today = formatLocalDate();
+    setDoses((prev) => refreshDosesAfterMedicationUpdate(prev, updatedMed, therapy, today));
   };
 
   const handleRefillMedication = (medicationId: string, addAmount?: number) => {
@@ -395,11 +559,27 @@ export default function App() {
     );
   };
 
-  const handleImportBackupData = (payload: MedPlanerBackupPayload) => {
-    setProfiles(payload.profiles.length > 0 ? payload.profiles : INITIAL_PROFILES);
-    setTherapies(payload.therapies);
-    setMedications(payload.medications);
-    setDoses(payload.doses);
+  const handleImportBackupData = (
+    payload: MedPlanerBackupPayload,
+    mode: 'replace' | 'merge'
+  ) => {
+    const nextState = applyBackupImport(
+      { profiles, therapies, medications, doses, medicationChanges },
+      payload,
+      mode,
+      INITIAL_PROFILES
+    );
+    setProfiles(nextState.profiles);
+    setTherapies(nextState.therapies);
+    setMedications(nextState.medications);
+    setDoses(nextState.doses);
+    setMedicationChanges(nextState.medicationChanges ?? []);
+    if (
+      activeProfileId !== 'all' &&
+      !nextState.profiles.some((p) => p.id === activeProfileId)
+    ) {
+      setActiveProfileId('all');
+    }
   };
 
   const handleResetSampleData = () => {
@@ -407,48 +587,139 @@ export default function App() {
     setTherapies(INITIAL_THERAPIES);
     setMedications(INITIAL_MEDICATIONS);
     setDoses(generateSampleDoses(INITIAL_THERAPIES, INITIAL_MEDICATIONS));
+    setMedicationChanges(INITIAL_MED_CHANGES);
     setActiveProfileId('all');
     localStorage.removeItem('medplaner_profiles');
     localStorage.removeItem('medplaner_therapies');
     localStorage.removeItem('medplaner_meds');
     localStorage.removeItem('medplaner_doses');
+    localStorage.removeItem('medplaner_med_changes');
   };
 
-  const handleCreateProfile = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newProfileName.trim()) return;
-    const colors = ['#0F766E', '#6366F1', '#D97706', '#E11D48', '#2563EB'];
+  const handleCreateProfileData = (data: Omit<FamilyProfile, 'id'>): FamilyProfile => {
     const created: FamilyProfile = {
       id: `prof-${Date.now()}`,
-      name: newProfileName.trim(),
-      relation: 'Bliski',
-      avatarColor: colors[profiles.length % colors.length],
+      name: data.name.trim(),
+      relation: data.relation.trim() || 'Bliski',
+      avatarColor: data.avatarColor || PROFILE_COLOR_PALETTE[profiles.length % PROFILE_COLOR_PALETTE.length],
     };
     setProfiles((prev) => [...prev, created]);
+    return created;
+  };
+
+  const handleUpdateProfile = (updated: FamilyProfile) => {
+    setProfiles((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+  };
+
+  const handleDeleteProfile = (
+    profileId: string,
+    options: { mode: 'transfer' | 'cascade'; targetProfileId?: string }
+  ) => {
+    if (profiles.length <= 1) return;
+    const remaining = profiles.filter((p) => p.id !== profileId);
+
+    if (options.mode === 'transfer' && remaining.length > 0) {
+      const targetId =
+        options.targetProfileId && remaining.some((p) => p.id === options.targetProfileId)
+          ? options.targetProfileId
+          : remaining[0].id;
+
+      setTherapies((prev) =>
+        prev.map((t) => ((t.profileId || 'self') === profileId ? { ...t, profileId: targetId } : t))
+      );
+      setMedications((prev) =>
+        prev.map((m) => ((m.profileId || 'self') === profileId ? { ...m, profileId: targetId } : m))
+      );
+      setDoses((prev) =>
+        prev.map((d) => ((d.profileId || 'self') === profileId ? { ...d, profileId: targetId } : d))
+      );
+    } else {
+      const removedTherapyIds = new Set(
+        therapies.filter((t) => (t.profileId || 'self') === profileId).map((t) => t.id)
+      );
+      const removedMedIds = new Set(
+        medications
+          .filter((m) => (m.profileId || 'self') === profileId || removedTherapyIds.has(m.therapyId))
+          .map((m) => m.id)
+      );
+
+      setTherapies((prev) => prev.filter((t) => (t.profileId || 'self') !== profileId));
+      setMedications((prev) =>
+        prev.filter((m) => (m.profileId || 'self') !== profileId && !removedTherapyIds.has(m.therapyId))
+      );
+      setDoses((prev) =>
+        prev.filter(
+          (d) =>
+            (d.profileId || 'self') !== profileId &&
+            !removedTherapyIds.has(d.therapyId) &&
+            !removedMedIds.has(d.medicationId)
+        )
+      );
+    }
+
+    setProfiles(remaining);
+    if (activeProfileId === profileId) {
+      setActiveProfileId('all');
+    }
+  };
+
+  const handleCreateProfileFromSidebar = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = newProfileName.trim();
+    if (!trimmed) {
+      setProfileFormError('Wpisz imię lub nazwę profilu.');
+      return;
+    }
+    if (isDuplicateProfileName(trimmed, profiles)) {
+      setProfileFormError(`Profil o nazwie "${trimmed}" już istnieje.`);
+      return;
+    }
+    const created = handleCreateProfileData({
+      name: trimmed,
+      relation: newProfileRelation,
+      avatarColor: newProfileColor,
+    });
     setActiveProfileId(created.id);
     setNewProfileName('');
+    setNewProfileRelation('Rodzina');
+    setNewProfileColor(PROFILE_COLOR_PALETTE[(profiles.length + 1) % PROFILE_COLOR_PALETTE.length]);
+    setProfileFormError('');
     setIsAddingProfile(false);
   };
 
   const todayStr = formatLocalDate();
   const todayCompliance = useMemo(() => {
-    const todayDoses = doses.filter((d) => {
-      if (d.date !== todayStr) return false;
-      if (activeProfileId === 'all') return true;
-      const med = medications.find((m) => m.id === d.medicationId);
-      const therapy = therapies.find((t) => t.id === d.therapyId);
-      const profId = d.profileId || med?.profileId || therapy?.profileId || 'self';
-      return profId === activeProfileId;
-    });
+    const todayDoses = buildDosesForDate(
+      todayStr,
+      therapies,
+      medications,
+      doses,
+      activeProfileId
+    );
     return calculateCompliance(todayDoses);
   }, [doses, medications, therapies, todayStr, activeProfileId]);
 
+  const sidebarScopeProfileId = sidebarShowAllProfiles ? 'all' : activeProfileId;
+  const activeProfileObj = profiles.find((p) => p.id === activeProfileId);
+  const sidebarScopeLabel =
+    sidebarScopeProfileId === 'all'
+      ? 'Wszystkie profile'
+      : activeProfileObj?.name || 'Aktywny profil';
+
+  const sidebarMedications = useMemo(() => {
+    return medications.filter((m) => {
+      if (sidebarScopeProfileId === 'all') return true;
+      const therapy = therapies.find((t) => t.id === m.therapyId);
+      return resolveProfileId(m.profileId, m, therapy) === sidebarScopeProfileId;
+    });
+  }, [medications, therapies, sidebarScopeProfileId]);
+
   const cabinetAlerts = useMemo(
     () =>
-      medications
+      sidebarMedications
         .map((m) => ({ med: m, eval: evaluateCabinetStatus(m) }))
         .filter((x) => x.eval.status !== 'ok'),
-    [medications]
+    [sidebarMedications]
   );
 
   return (
@@ -478,7 +749,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setViewMode('simulator')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap shrink-0 ${
                 viewMode === 'simulator'
                   ? 'bg-white text-slate-900 shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
@@ -489,23 +760,8 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => setViewMode('cabinet')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all tabular-nums ${
-                viewMode === 'cabinet'
-                  ? 'bg-white text-slate-900 shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Package className="w-3.5 h-3.5 text-teal-700" />
-              <span>Apteczka</span>
-              {cabinetAlerts.length > 0 && (
-                <span className="text-[10px] font-black text-amber-700">({cabinetAlerts.length})</span>
-              )}
-            </button>
-            <button
-              type="button"
               onClick={() => setViewMode('code')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap shrink-0 ${
                 viewMode === 'code'
                   ? 'bg-white text-slate-900 shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
@@ -516,15 +772,16 @@ export default function App() {
             </button>
           </div>
 
-          {/* Right Zone: Primary Export Action */}
+          {/* Right Zone: Primary Export Action (Always visible, compact icon on narrow viewports) */}
           <button
             type="button"
             onClick={downloadFlutterProjectZip}
-            className="hidden md:inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold transition-colors shrink-0"
+            className="inline-flex items-center justify-center gap-1.5 px-2.5 sm:px-3.5 py-2 min-h-[40px] min-w-[40px] rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold transition-colors shrink-0"
             title="Pobierz kompletny projekt Flutter jako ZIP"
+            aria-label="Pobierz kompletny projekt Flutter jako ZIP"
           >
-            <Download className="w-4 h-4" />
-            <span>Pobierz .ZIP</span>
+            <Download className="w-4 h-4 shrink-0" />
+            <span className="hidden md:inline whitespace-nowrap">Pobierz .ZIP</span>
           </button>
         </div>
       </header>
@@ -540,13 +797,25 @@ export default function App() {
                 medications={medications}
                 doses={doses}
                 profiles={profiles}
+                medicationChanges={medicationChanges}
                 activeProfileId={activeProfileId}
+                activeTab={simulatorTab}
+                onTabChange={setSimulatorTab}
                 onSelectProfile={setActiveProfileId}
+                onCreateProfile={handleCreateProfileData}
+                onUpdateProfile={handleUpdateProfile}
+                onDeleteProfile={handleDeleteProfile}
                 onTakeDose={handleTakeDose}
                 onSnoozeDose={handleSnoozeDose}
                 onSkipDose={handleSkipDose}
+                onUndoDose={handleUndoDose}
+                onUpdateDoseNote={handleUpdateDoseNote}
                 onAddTherapy={handleAddTherapy}
+                onUpdateTherapy={handleUpdateTherapy}
+                onToggleTherapyActive={handleToggleTherapyActive}
+                onDeleteTherapy={handleDeleteTherapy}
                 onAddMedication={handleAddMedication}
+                onUpdateMedication={handleUpdateMedication}
                 onDeleteMedication={handleDeleteMedication}
                 onRefillMedication={handleRefillMedication}
                 onUpdateStockAndExpiry={handleUpdateStockAndExpiry}
@@ -555,14 +824,14 @@ export default function App() {
               />
             </div>
 
-            {/* Companion Desktop Panel: Family Profiles & Dawko Medicine Cabinet Overview */}
+            {/* Companion Desktop Panel */}
             <aside className="lg:col-span-6 space-y-4">
               {/* Quick Clinical Telemetry Summary */}
               <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-2xs">
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <p className="text-[11px] font-bold uppercase tracking-wider text-teal-700">
-                      Podgląd Terapii i Apteczki
+                      Podgląd Terapii i Apteczki · {sidebarScopeLabel}
                     </p>
                     <h2 className="text-lg font-extrabold text-slate-900 mt-0.5">
                       Wspólna apteczka i realizacja dawek
@@ -571,6 +840,14 @@ export default function App() {
                       Każde odhaczenie dawki w symulatorze automatycznie pomniejsza stan opakowania.
                     </p>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsDesktopPdfReportOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold transition-colors shrink-0 whitespace-nowrap"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>Raport PDF</span>
+                  </button>
                 </div>
 
                 <div className="grid grid-cols-3 gap-3 mt-4 pt-4 border-t border-slate-100 tabular-nums">
@@ -582,7 +859,7 @@ export default function App() {
                   </div>
                   <div>
                     <p className="text-[11px] text-slate-500 font-medium">Leki w apteczce</p>
-                    <p className="text-xl font-black text-slate-900 mt-0.5">{medications.length}</p>
+                    <p className="text-xl font-black text-slate-900 mt-0.5">{sidebarMedications.length}</p>
                   </div>
                   <div>
                     <p className="text-[11px] text-slate-500 font-medium">Alerty zapasów</p>
@@ -599,19 +876,39 @@ export default function App() {
 
               {/* Family Profiles Card */}
               <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-2xs space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <Users className="w-4 h-4 text-teal-700" />
                     <h3 className="text-sm font-extrabold text-slate-900">Profile bliskich</h3>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setIsAddingProfile(!isAddingProfile)}
-                    className="text-xs font-bold text-teal-700 hover:underline flex items-center gap-1"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Dodaj osobę</span>
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSidebarEditProfileId(null);
+                        setSidebarDeleteProfileId(null);
+                        setIsSidebarProfileManagerOpen(true);
+                      }}
+                      className="text-xs font-bold text-slate-600 hover:text-teal-700 flex items-center gap-1"
+                    >
+                      <SlidersHorizontal className="w-3.5 h-3.5" />
+                      <span>Zarządzaj</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAddingProfile(!isAddingProfile);
+                        setProfileFormError('');
+                        setNewProfileColor(
+                          PROFILE_COLOR_PALETTE[profiles.length % PROFILE_COLOR_PALETTE.length]
+                        );
+                      }}
+                      className="text-xs font-bold text-teal-700 hover:underline flex items-center gap-1"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Dodaj osobę</span>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex flex-wrap gap-2">
@@ -632,66 +929,198 @@ export default function App() {
                       return (m.profileId || th?.profileId || 'self') === p.id;
                     }).length;
                     const selected = activeProfileId === p.id;
+                    const canDelete = profiles.length > 1;
                     return (
-                      <button
+                      <div
                         key={p.id}
-                        type="button"
-                        onClick={() => setActiveProfileId(p.id)}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-colors tabular-nums ${
+                        className={`inline-flex items-center rounded-xl overflow-hidden border transition-colors ${
                           selected
-                            ? 'bg-teal-700 text-white'
-                            : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                            ? 'bg-teal-700 text-white border-teal-700'
+                            : 'bg-slate-100 text-slate-700 border-slate-200/60 hover:bg-slate-200/80'
                         }`}
                       >
-                        <span
-                          className="w-2 h-2 rounded-full"
-                          style={{ backgroundColor: selected ? '#99F6E4' : p.avatarColor }}
-                        />
-                        <span>{p.name}</span>
-                        <span className="opacity-75">({count})</span>
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => setActiveProfileId(p.id)}
+                          className="pl-3 pr-2 py-1.5 text-xs font-bold flex items-center gap-2 tabular-nums"
+                        >
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ backgroundColor: selected ? '#99F6E4' : p.avatarColor }}
+                          />
+                          <span>{p.name}</span>
+                          <span className="opacity-75">({count})</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSidebarDeleteProfileId(null);
+                            setSidebarEditProfileId(p.id);
+                            setIsSidebarProfileManagerOpen(true);
+                          }}
+                          title={`Edytuj profil ${p.name}`}
+                          aria-label={`Edytuj profil ${p.name}`}
+                          className={`p-1.5 transition-colors ${
+                            selected
+                              ? 'text-teal-100 hover:text-white hover:bg-teal-800'
+                              : 'text-slate-400 hover:text-teal-700 hover:bg-white/70'
+                          }`}
+                        >
+                          <Pencil className="w-3 h-3" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!canDelete}
+                          onClick={() => {
+                            setSidebarEditProfileId(null);
+                            setSidebarDeleteProfileId(p.id);
+                            setIsSidebarProfileManagerOpen(true);
+                          }}
+                          title={
+                            canDelete
+                              ? `Usuń profil ${p.name}`
+                              : 'Ostatniego profilu nie można usunąć'
+                          }
+                          aria-label={`Usuń profil ${p.name}`}
+                          className={`p-1.5 pr-2 transition-colors ${
+                            !canDelete
+                              ? 'opacity-30 cursor-not-allowed'
+                              : selected
+                              ? 'text-teal-100 hover:text-rose-200 hover:bg-teal-800'
+                              : 'text-slate-400 hover:text-rose-600 hover:bg-white/70'
+                          }`}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
                     );
                   })}
                 </div>
 
                 {isAddingProfile && (
-                  <form onSubmit={handleCreateProfile} className="flex items-center gap-2 pt-2">
-                    <input
-                      type="text"
-                      value={newProfileName}
-                      onChange={(e) => setNewProfileName(e.target.value)}
-                      placeholder="Imię np. Tata, Babcia..."
-                      className="flex-1 px-3 py-2 rounded-xl border border-slate-300 text-xs text-slate-900"
-                    />
-                    <button
-                      type="submit"
-                      className="px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white rounded-xl text-xs font-bold"
-                    >
-                      Zapisz
-                    </button>
+                  <form
+                    onSubmit={handleCreateProfileFromSidebar}
+                    className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 space-y-2.5"
+                  >
+                    {profileFormError && (
+                      <div className="p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                        <span>{profileFormError}</span>
+                      </div>
+                    )}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <input
+                        type="text"
+                        value={newProfileName}
+                        onChange={(e) => {
+                          setNewProfileName(e.target.value);
+                          if (profileFormError) setProfileFormError('');
+                        }}
+                        placeholder="Imię np. Tata, Babcia..."
+                        className="px-3 py-2 rounded-xl border border-slate-300 bg-white text-xs text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-teal-600"
+                      />
+                      <select
+                        value={newProfileRelation}
+                        onChange={(e) => setNewProfileRelation(e.target.value)}
+                        className="px-3 py-2 rounded-xl border border-slate-300 bg-white text-xs text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-teal-600"
+                      >
+                        {PROFILE_RELATION_OPTIONS.map((rel) => (
+                          <option key={rel} value={rel}>
+                            {rel}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] font-bold text-slate-600 mr-1">Kolor:</span>
+                        {PROFILE_COLOR_PALETTE.map((hex) => {
+                          const active = newProfileColor === hex;
+                          return (
+                            <button
+                              key={hex}
+                              type="button"
+                              onClick={() => setNewProfileColor(hex)}
+                              aria-label={`Wybierz kolor ${hex}`}
+                              className={`w-6 h-6 rounded-full flex items-center justify-center ${
+                                active ? 'ring-2 ring-offset-1 ring-slate-900' : ''
+                              }`}
+                              style={{ backgroundColor: hex }}
+                            >
+                              {active && <Check className="w-3 h-3 text-white" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsAddingProfile(false);
+                            setProfileFormError('');
+                          }}
+                          className="px-3 py-1.5 rounded-xl bg-white border border-slate-300 text-slate-600 text-xs font-bold"
+                        >
+                          Anuluj
+                        </button>
+                        <button
+                          type="submit"
+                          className="px-4 py-1.5 bg-teal-700 hover:bg-teal-800 text-white rounded-xl text-xs font-bold"
+                        >
+                          Zapisz
+                        </button>
+                      </div>
+                    </div>
                   </form>
                 )}
               </div>
 
               {/* Quick Cabinet Alerts Preview */}
               <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-2xs space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-extrabold text-slate-900">
-                    Kontrola zapasów i ważności
-                  </h3>
-                  <button
-                    type="button"
-                    onClick={() => setViewMode('cabinet')}
-                    className="text-xs font-bold text-teal-700 hover:underline"
-                  >
-                    Otwórz pełną apteczkę &rarr;
-                  </button>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-extrabold text-slate-900">
+                      Kontrola zapasów i ważności
+                    </h3>
+                    <p className="text-[11px] text-slate-500">{sidebarScopeLabel}</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {activeProfileId !== 'all' && (
+                      <button
+                        type="button"
+                        onClick={() => setSidebarShowAllProfiles((v) => !v)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors whitespace-nowrap ${
+                          sidebarShowAllProfiles
+                            ? 'bg-slate-900 text-white'
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                        }`}
+                      >
+                        {sidebarShowAllProfiles
+                          ? `Tylko ${activeProfileObj?.name || 'profil'}`
+                          : 'Wszystkie profile'}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSimulatorTab('cabinet');
+                        if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+                          window.scrollTo({ top: 0, behavior: 'smooth' });
+                        }
+                      }}
+                      className="text-xs font-bold text-teal-700 hover:underline whitespace-nowrap"
+                    >
+                      Otwórz apteczkę w symulatorze &rarr;
+                    </button>
+                  </div>
                 </div>
 
                 {cabinetAlerts.length === 0 ? (
                   <div className="p-4 rounded-xl bg-emerald-50/70 border border-emerald-200/60 flex items-center gap-2.5 text-xs text-emerald-900">
                     <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                    <span>Wszystkie leki w domowej apteczce mają bezpieczny zapas i ważną datę.</span>
+                    <span>
+                      Wszystkie leki ({sidebarScopeLabel}) mają bezpieczny zapas i ważną datę.
+                    </span>
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -730,22 +1159,40 @@ export default function App() {
               </div>
             </aside>
           </div>
-        ) : viewMode === 'cabinet' ? (
-          <div className="max-w-4xl mx-auto">
-            <MedicineCabinetView
-              medications={medications}
-              therapies={therapies}
-              profiles={profiles}
-              doses={doses}
-              activeProfileId={activeProfileId}
-              onRefillMedication={handleRefillMedication}
-              onUpdateStockAndExpiry={handleUpdateStockAndExpiry}
-            />
-          </div>
         ) : (
           <ProjectIdxStudio />
         )}
       </main>
+
+      {/* Sidebar Profile Manager Modal */}
+      <ProfileManagerModal
+        isOpen={isSidebarProfileManagerOpen}
+        profiles={profiles}
+        therapies={therapies}
+        medications={medications}
+        initialEditProfileId={sidebarEditProfileId}
+        initialDeleteProfileId={sidebarDeleteProfileId}
+        onClose={() => {
+          setIsSidebarProfileManagerOpen(false);
+          setSidebarEditProfileId(null);
+          setSidebarDeleteProfileId(null);
+        }}
+        onCreateProfile={handleCreateProfileData}
+        onUpdateProfile={handleUpdateProfile}
+        onDeleteProfile={handleDeleteProfile}
+      />
+
+      {/* Desktop PDF Report Modal */}
+      <TherapyPdfReportModal
+        isOpen={isDesktopPdfReportOpen}
+        onClose={() => setIsDesktopPdfReportOpen(false)}
+        profiles={profiles}
+        therapies={therapies}
+        medications={medications}
+        doses={doses}
+        medicationChanges={medicationChanges}
+        activeProfileId={activeProfileId}
+      />
 
       {/* Clean Footer */}
       <footer className="bg-white border-t border-slate-200/80 py-4 px-6 text-xs text-slate-500">

@@ -12,25 +12,29 @@ import {
   LogOut,
   Database,
   FolderSearch,
+  Info,
 } from 'lucide-react';
-import { Therapy, Medication, DoseItem, FamilyProfile, formatLocalDate } from '../utils/medicationLogic';
+import {
+  Therapy,
+  Medication,
+  DoseItem,
+  FamilyProfile,
+  MedicationChangeRecord,
+  MedPlanerBackupPayload,
+  formatLocalDate,
+  serializeBackupPayload,
+  normalizeImportedBackupPayload,
+} from '../utils/medicationLogic';
 
-export interface MedPlanerBackupPayload {
-  app: 'MedPlaner';
-  version: number;
-  exportedAt: string;
-  profiles: FamilyProfile[];
-  therapies: Therapy[];
-  medications: Medication[];
-  doses: DoseItem[];
-}
+export type { MedPlanerBackupPayload };
 
 interface BackupSyncViewProps {
   therapies: Therapy[];
   medications: Medication[];
   doses: DoseItem[];
   profiles: FamilyProfile[];
-  onImportBackupData: (payload: MedPlanerBackupPayload) => void;
+  medicationChanges?: MedicationChangeRecord[];
+  onImportBackupData: (payload: MedPlanerBackupPayload, mode: 'replace' | 'merge') => void;
   onRestoreSampleBackup?: () => void;
 }
 
@@ -39,6 +43,7 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
   medications,
   doses,
   profiles,
+  medicationChanges = [],
   onImportBackupData,
   onRestoreSampleBackup,
 }) => {
@@ -50,6 +55,10 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
   const [lastBackupSize, setLastBackupSize] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<{ text: string; isError?: boolean } | null>(null);
   const [showConfirmRestore, setShowConfirmRestore] = useState(false);
+  const [pendingJsonImport, setPendingJsonImport] = useState<{
+    fileName: string;
+    payload: MedPlanerBackupPayload;
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleSignIn = () => {
@@ -59,7 +68,7 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
       setIsLoggedIn(true);
       setIsProcessing(false);
       setStatusMessage({
-        text: 'Połączono konto Google. Możesz zapisać kopię bazy bezpośrednio na swoim prywatnym Dysku Google.',
+        text: 'Połączono konto demonstracyjne Google. Pamiętaj, że jest to lokalna symulacja — do realnego zapisu użyj pliku .json powyżej.',
       });
     }, 550);
   };
@@ -67,7 +76,7 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
   const handleSignOut = () => {
     setIsLoggedIn(false);
     setStatusMessage({
-      text: 'Wylogowano z konta Google. Wszystkie dane pozostają bezpieczne lokalnie na urządzeniu (offline).',
+      text: 'Wylogowano z trybu demonstracyjnego Google Drive. Wszystkie dane pozostają bezpieczne lokalnie.',
     });
   };
 
@@ -88,7 +97,7 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
       setLastBackupSize(sizeStr);
       setIsProcessing(false);
       setStatusMessage({
-        text: `Kopia zapasowa (medplaner-backup.db, ${sizeStr}) zapisana w folderze "MedPlaner Kopia Zapasowa" na Dysku Google.`,
+        text: `Symulacja kopii na Dysku Google (medplaner-backup.db, ${sizeStr}) zakończona. Aby zapisać prawdziwy plik na urządzeniu, kliknij "Pobierz kopię" powyżej.`,
       });
     }, 650);
   };
@@ -104,21 +113,19 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
         onRestoreSampleBackup();
       }
       setStatusMessage({
-        text: 'Baza danych SQLite została pomyślnie przywrócona z Dysku Google i zaktualizowano przypomnienia.',
+        text: 'Przywrócono przykładowe dane demonstracyjne (symulacja lokalna) i odświeżono przypomnienia.',
       });
     }, 650);
   };
 
   const handleDownloadRealBackup = () => {
-    const payload: MedPlanerBackupPayload = {
-      app: 'MedPlaner',
-      version: 2,
-      exportedAt: new Date().toISOString(),
+    const payload = serializeBackupPayload({
       profiles,
       therapies,
       medications,
       doses,
-    };
+      medicationChanges,
+    });
 
     const json = JSON.stringify(payload, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
@@ -136,7 +143,7 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
 
     const sizeKb = (blob.size / 1024).toFixed(1);
     setStatusMessage({
-      text: `Pobrano plik kopii "${filename}" (${sizeKb} KB). Możesz go zachować i wczytać w dowolnym momencie przyciskiem "Wczytaj plik kopii".`,
+      text: `Pobrano plik kopii "${filename}" (${sizeKb} KB) w formacie kompatybilnym z aplikacją Android/Flutter.`,
     });
   };
 
@@ -146,27 +153,19 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
 
     try {
       const text = await file.text();
-      const parsed = JSON.parse(text) as Partial<MedPlanerBackupPayload>;
-      if (!Array.isArray(parsed.therapies) || !Array.isArray(parsed.medications)) {
-        throw new Error('Nieprawidłowa struktura pliku kopii zapasowej.');
-      }
-
-      onImportBackupData({
-        app: 'MedPlaner',
-        version: parsed.version || 2,
-        exportedAt: parsed.exportedAt || new Date().toISOString(),
-        profiles: Array.isArray(parsed.profiles) ? parsed.profiles : profiles,
-        therapies: parsed.therapies,
-        medications: parsed.medications,
-        doses: Array.isArray(parsed.doses) ? parsed.doses : doses,
+      const rawParsed = JSON.parse(text);
+      const normalized = normalizeImportedBackupPayload(rawParsed, profiles);
+      setPendingJsonImport({
+        fileName: file.name,
+        payload: normalized,
       });
-
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'Nie udało się wczytać pliku kopii. Upewnij się, że wybierasz plik JSON z MedPlanera.';
       setStatusMessage({
-        text: `Przywrócono ${parsed.therapies.length} terapii i ${parsed.medications.length} leków z pliku "${file.name}".`,
-      });
-    } catch (err: any) {
-      setStatusMessage({
-        text: err?.message || 'Nie udało się wczytać pliku kopii. Upewnij się, że wybierasz plik JSON z MedPlanera.',
+        text: msg,
         isError: true,
       });
     } finally {
@@ -174,6 +173,19 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
         fileInputRef.current.value = '';
       }
     }
+  };
+
+  const handleExecuteJsonImport = (mode: 'replace' | 'merge') => {
+    if (!pendingJsonImport) return;
+    const { fileName, payload } = pendingJsonImport;
+    onImportBackupData(payload, mode);
+    setPendingJsonImport(null);
+    setStatusMessage({
+      text:
+        mode === 'replace'
+          ? `Zastąpiono dane kopią z "${fileName}" (${payload.therapies.length} terapii, ${payload.medications.length} leków, ${payload.doseLogs.length} wpisów dawek).`
+          : `Scalono dane z pliku "${fileName}" z obecną bazą (${payload.therapies.length} terapii, ${payload.medications.length} leków).`,
+    });
   };
 
   return (
@@ -189,8 +201,9 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
               Pełna suwerenność i prywatność danych
             </h3>
             <p className="text-xs text-teal-900/90 mt-1 leading-relaxed">
-              MedPlaner działa w <strong>100% offline</strong>. Kopia w chmurze lub do pliku
-              zależy wyłącznie od Ciebie — żadne dane nie trafiają na zewnętrzne serwery twórcy.
+              MedPlaner działa w <strong>100% offline</strong>. Kopia do pliku{' '}
+              <code className="bg-white/70 px-1 rounded font-mono">.json</code> jest w pełni
+              wymienna pomiędzy wersją webową a aplikacją Android/Flutter.
             </p>
           </div>
         </div>
@@ -199,15 +212,16 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
           <div className="flex items-start gap-2">
             <FolderSearch className="w-3.5 h-3.5 text-teal-700 shrink-0 mt-0.5" />
             <span>
-              <strong>Po reinstalacji na Androidzie:</strong> aplikacja automatycznie skanuje folder{' '}
-              <code className="bg-white/70 px-1 rounded font-mono">Pobrane/MedPlaner</code> i pozwala
-              wskazać plik <code className="bg-white/70 px-1 rounded font-mono">medplaner-backup.db</code> ręcznie.
+              <strong>Na Androidzie (Flutter):</strong> oprócz wymiany{' '}
+              <code className="bg-white/70 px-1 rounded font-mono">.json</code> aplikacja zapisuje także bazę{' '}
+              <code className="bg-white/70 px-1 rounded font-mono">medplaner-backup.db</code> w{' '}
+              <code className="bg-white/70 px-1 rounded font-mono">Pobrane/MedPlaner</code>.
             </span>
           </div>
           <div className="flex items-start gap-2">
             <Lock className="w-3.5 h-3.5 text-teal-700 shrink-0 mt-0.5" />
             <span>
-              <strong>Zakres Google Drive (drive.file):</strong> dostęp wyłącznie do własnego folderu kopii aplikacji.
+              <strong>Zakres Google Drive (drive.file):</strong> w pełnej kompilacji Android dostęp wyłącznie do folderu aplikacji.
             </span>
           </div>
         </div>
@@ -231,7 +245,7 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
         </div>
       )}
 
-      {/* Local File Backup & Restore (Real file download + file picker) */}
+      {/* Local File Backup & Restore (Real .json file download + file picker) */}
       <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-2xs space-y-3">
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2.5">
@@ -239,9 +253,9 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
               <Database className="w-4 h-4" />
             </div>
             <div>
-              <h4 className="text-xs font-extrabold text-slate-900">Lokalna kopia do pliku</h4>
+              <h4 className="text-xs font-extrabold text-slate-900">Lokalna kopia do pliku (.json)</h4>
               <p className="text-[11px] text-slate-500">
-                Przetrwa odinstalowanie aplikacji · Bez logowania
+                Realny zapis na urządzeniu · Zgodna z Flutterem
               </p>
             </div>
           </div>
@@ -249,9 +263,11 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
         </div>
 
         <p className="text-[11px] text-slate-600 leading-relaxed">
-          Pobierz kompletną kopię terapii, leków, domowej apteczki i profili do pliku. Na Androidzie
-          aplikacja zapisuje <code className="bg-slate-100 px-1 rounded font-mono text-teal-900">medplaner-backup.db</code>{' '}
-          bezpośrednio w publicznym folderze <strong>Pobrane (Download)</strong> przez systemowe okno <em>Zapisz jako</em>.
+          Eksportuj i importuj pełny zestaw danych (<code className="bg-slate-100 px-1 rounded font-mono text-teal-900">profiles</code>,{' '}
+          <code className="bg-slate-100 px-1 rounded font-mono text-teal-900">therapies</code>,{' '}
+          <code className="bg-slate-100 px-1 rounded font-mono text-teal-900">medications</code>,{' '}
+          <code className="bg-slate-100 px-1 rounded font-mono text-teal-900">doseLogs</code>) w pliku{' '}
+          <code className="bg-slate-100 px-1 rounded font-mono text-teal-900">.json</code> — bez logowania i z wyborem zastąpienia lub scalenia.
         </p>
 
         <input
@@ -283,28 +299,39 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
         </div>
       </div>
 
-      {/* Optional Google Drive Backup */}
+      {/* Optional Google Drive Backup (Demo simulation clearly labeled) */}
       <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-2xs space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-slate-100 flex items-center justify-center shrink-0">
               <Cloud className="w-4 h-4 text-teal-700" />
             </div>
             <div>
               <h4 className="text-xs font-extrabold text-slate-900">Opcjonalna kopia na Dysku Google</h4>
-              <p className="text-[11px] text-slate-500">Synchronizacja między urządzeniami</p>
+              <p className="text-[11px] font-semibold text-amber-800">
+                Tryb demonstracyjny (symulacja lokalna)
+              </p>
             </div>
           </div>
           {isLoggedIn && (
             <button
               type="button"
               onClick={handleSignOut}
-              className="text-[11px] text-rose-600 hover:underline font-semibold flex items-center gap-1"
+              className="text-[11px] text-rose-600 hover:underline font-semibold flex items-center gap-1 shrink-0"
             >
               <LogOut className="w-3 h-3" />
               Wyloguj
             </button>
           )}
+        </div>
+
+        <div className="p-2.5 rounded-xl bg-amber-50/90 border border-amber-200/80 flex items-start gap-2 text-[11px] text-amber-950 leading-relaxed">
+          <Info className="w-3.5 h-3.5 text-amber-700 shrink-0 mt-0.5" />
+          <span>
+            W podglądzie webowym integracja z Dyskiem Google działa jako{' '}
+            <strong>symulacja lokalna</strong>. Do realnego zapisu i przeniesienia danych na urządzenie
+            użyj sekcji <strong>Lokalna kopia do pliku (.json)</strong> powyżej.
+          </span>
         </div>
 
         {!isLoggedIn ? (
@@ -320,7 +347,7 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
               <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 10.03 0 12s.45 3.82 1.25 5.42l4.03-3.15z" />
               <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.35 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z" />
             </svg>
-            <span>{isProcessing ? 'Łączenie...' : 'Zaloguj przez Google (Opcjonalnie)'}</span>
+            <span>{isProcessing ? 'Łączenie...' : 'Symuluj logowanie Google (Demo)'}</span>
           </button>
         ) : (
           <div className="space-y-2.5">
@@ -331,15 +358,15 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
                 </div>
                 <div>
                   <p className="text-xs font-bold text-slate-900">{userName}</p>
-                  <p className="text-[11px] text-slate-500">{userEmail}</p>
+                  <p className="text-[11px] text-slate-500">{userEmail} · Demo</p>
                 </div>
               </div>
-              <span className="text-[11px] font-semibold text-emerald-800">Połączono</span>
+              <span className="text-[11px] font-semibold text-emerald-800">Symulacja aktywna</span>
             </div>
 
             {lastBackupDate && (
               <div className="px-3 py-2 bg-slate-50 rounded-xl border border-slate-200/70 text-[11px] text-slate-600 flex items-center justify-between tabular-nums">
-                <span>Ostatnia kopia: {lastBackupDate}</span>
+                <span>Ostatnia symulacja: {lastBackupDate}</span>
                 <span className="font-bold text-teal-800">{lastBackupSize}</span>
               </div>
             )}
@@ -368,13 +395,79 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
         )}
       </div>
 
-      {/* Confirmation Modal */}
+      {/* JSON Import Replace vs Merge Choice Modal */}
+      {pendingJsonImport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 backdrop-blur-xs p-4">
+          <div
+            className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 space-y-3"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="json-import-choice-title"
+          >
+            <div className="flex items-start gap-2.5">
+              <div className="p-2 rounded-xl bg-teal-50 text-teal-700 shrink-0">
+                <Upload className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 id="json-import-choice-title" className="font-extrabold text-sm text-slate-900">
+                  Jak wczytać kopię JSON?
+                </h4>
+                <p className="text-[11px] text-slate-500 mt-0.5 break-all">
+                  Plik: {pendingJsonImport.fileName}
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 text-xs text-slate-700 space-y-1 tabular-nums">
+              <p className="font-semibold text-slate-900">Zawartość pliku kopii:</p>
+              <p className="text-[11px] text-slate-600">
+                {pendingJsonImport.payload.profiles.length} profili ·{' '}
+                {pendingJsonImport.payload.therapies.length} terapii ·{' '}
+                {pendingJsonImport.payload.medications.length} leków ·{' '}
+                {pendingJsonImport.payload.doseLogs.length} wpisów dawek
+              </p>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Wybierz, czy chcesz nadpisać obecne dane w aplikacji, czy bezpiecznie scalić je z istniejącą listą.
+            </p>
+
+            <div className="space-y-2 pt-1">
+              <button
+                type="button"
+                onClick={() => handleExecuteJsonImport('merge')}
+                className="w-full py-2.5 px-3 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold transition-colors"
+              >
+                Scal z obecnymi danymi
+              </button>
+              <button
+                type="button"
+                onClick={() => handleExecuteJsonImport('replace')}
+                className="w-full py-2.5 px-3 rounded-xl border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-950 text-xs font-bold transition-colors"
+              >
+                Zastąp bieżące dane
+              </button>
+              <button
+                type="button"
+                onClick={() => setPendingJsonImport(null)}
+                className="w-full py-2 px-3 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors"
+              >
+                Anuluj
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Cloud Demo Confirmation Modal */}
       {showConfirmRestore && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-xl border border-slate-200 space-y-3">
-            <h4 className="font-extrabold text-sm text-slate-900">Przywrócić bazę z Dysku Google?</h4>
+            <h4 className="font-extrabold text-sm text-slate-900">
+              Przywrócić dane demonstracyjne?
+            </h4>
             <p className="text-xs text-slate-600 leading-relaxed">
-              Przywrócenie kopii zastąpi bieżącą bazę leków i automatycznie przeliczy wszystkie zaplanowane powiadomienia.
+              To działanie jest częścią lokalnej symulacji Dysku Google i przywróci przykładowy zestaw terapii oraz leków.
             </p>
             <div className="flex items-center justify-end gap-2 pt-1">
               <button
@@ -389,7 +482,7 @@ export const BackupSyncView: React.FC<BackupSyncViewProps> = ({
                 onClick={handleConfirmCloudRestore}
                 className="px-4 py-1.5 bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold rounded-xl"
               >
-                Przywróć bazę
+                Przywróć dane demo
               </button>
             </div>
           </div>

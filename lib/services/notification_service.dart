@@ -70,10 +70,16 @@ class NotificationService {
     required String medicationName,
     required String doseAmount,
     required String therapyName,
+    String? instructions,
     required DateTime scheduledDateTime,
   }) async {
     final tz.TZDateTime tzTime = tz.TZDateTime.from(scheduledDateTime, tz.local);
     if (tzTime.isBefore(tz.TZDateTime.now(tz.local))) return;
+
+    final trimmedInst = instructions?.trim() ?? '';
+    final bodyText = trimmedInst.isNotEmpty
+        ? 'Dawka: $doseAmount ($therapyName) · $trimmedInst'
+        : 'Dawka: $doseAmount ($therapyName)';
 
     final androidDetails = AndroidNotificationDetails(
       channelId,
@@ -83,6 +89,7 @@ class NotificationService {
       priority: Priority.high,
       fullScreenIntent: true,
       category: AndroidNotificationCategory.alarm,
+      styleInformation: BigTextStyleInformation(bodyText),
       actions: const <AndroidNotificationAction>[
         AndroidNotificationAction(
           actionTake,
@@ -102,7 +109,7 @@ class NotificationService {
     await _notificationsPlugin.zonedSchedule(
       notificationId,
       '💊 Czas na lek: $medicationName',
-      'Dawka: $doseAmount ($therapyName)',
+      bodyText,
       tzTime,
       NotificationDetails(android: androidDetails),
       androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
@@ -120,7 +127,7 @@ class NotificationService {
     final scheduledTime = tz.TZDateTime.now(tz.local).add(Duration(minutes: minutes));
     final notificationId = _snoozeNotificationId(doseId);
 
-    const androidDetails = AndroidNotificationDetails(
+    final androidDetails = AndroidNotificationDetails(
       channelId,
       channelName,
       channelDescription: channelDesc,
@@ -128,7 +135,8 @@ class NotificationService {
       priority: Priority.high,
       fullScreenIntent: true,
       category: AndroidNotificationCategory.alarm,
-      actions: <AndroidNotificationAction>[
+      styleInformation: BigTextStyleInformation(body),
+      actions: const <AndroidNotificationAction>[
         AndroidNotificationAction(actionTake, 'Wziąłem', showsUserInterface: false, cancelNotification: true),
         AndroidNotificationAction(actionSnooze15, 'Odłóż (15 min)', showsUserInterface: false, cancelNotification: true),
       ],
@@ -139,7 +147,7 @@ class NotificationService {
       title,
       body,
       scheduledTime,
-      const NotificationDetails(android: androidDetails),
+      NotificationDetails(android: androidDetails),
       androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
       uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
       payload: doseId,
@@ -212,8 +220,9 @@ class NotificationService {
               notificationId: notifId,
               doseId: dose.id,
               medicationName: dose.medicationName ?? 'Lek',
-              doseAmount: dose.doseAmount ?? '1 dawka',
+              doseAmount: dose.formattedDose,
               therapyName: dose.therapyName ?? 'Terapia',
+              instructions: dose.instructions,
               scheduledDateTime: scheduledAt,
             );
           }
@@ -251,4 +260,3 @@ class NotificationService {
     );
   }
 }
-

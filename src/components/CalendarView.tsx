@@ -1,221 +1,493 @@
-import React, { useState } from 'react';
-import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, CheckCircle2, AlertCircle, Clock, Check } from 'lucide-react';
-import { DoseItem, Therapy, isTherapyCompletedForDate, formatDoseDisplay, addDaysToDateStr } from '../utils/medicationLogic';
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  Calendar as CalendarIcon,
+  ChevronLeft,
+  ChevronRight,
+  CheckCircle2,
+  AlertCircle,
+  Clock,
+  Check,
+  Undo2,
+  ChevronUp,
+  ChevronDown,
+  StickyNote,
+} from 'lucide-react';
+import {
+  DoseItem,
+  Therapy,
+  Medication,
+  FamilyProfile,
+  DayComplianceDotStatus,
+  isTherapyCompletedForDate,
+  formatDoseDisplay,
+  addDaysToDateStr,
+  buildDosesForDate,
+  getDayComplianceStatus,
+  getMonthCalendarCells,
+  getWeekCalendarDates,
+  resolveProfileId,
+} from '../utils/medicationLogic';
 
 interface CalendarViewProps {
-  currentDate: string; // YYYY-MM-DD
-  allDoses: DoseItem[];
+  currentDate: string; // YYYY-MM-DD (Today)
+  selectedDate: string; // YYYY-MM-DD
   therapies: Therapy[];
+  medications: Medication[];
+  storedDoses: DoseItem[];
+  profiles: FamilyProfile[];
+  activeProfileId: string;
   onSelectDate: (date: string) => void;
-  onTakeDose: (doseId: string) => void;
+  onTakeDose: (dose: DoseItem) => void;
+  onSkipDose: (dose: DoseItem) => void;
+  onUndoDose: (doseId: string) => void;
+  onEditDoseNote?: (dose: DoseItem) => void;
+}
+
+const WEEKDAY_LABELS = ['Pn', 'Wt', 'Śr', 'Cz', 'Pt', 'Sb', 'Nd'];
+
+const DOT_COLOR_CLASSES: Record<DayComplianceDotStatus, { normal: string; selected: string }> = {
+  none: { normal: 'bg-transparent', selected: 'bg-transparent' },
+  completed: { normal: 'bg-emerald-500', selected: 'bg-emerald-300' },
+  partial: { normal: 'bg-amber-500', selected: 'bg-amber-300' },
+  missed: { normal: 'bg-rose-500', selected: 'bg-rose-300' },
+  upcoming: { normal: 'bg-sky-500', selected: 'bg-sky-300' },
+};
+
+function parseYearMonth(dateStr: string): { year: number; month: number } {
+  return {
+    year: parseInt(dateStr.slice(0, 4), 10),
+    month: parseInt(dateStr.slice(5, 7), 10),
+  };
 }
 
 export const CalendarView: React.FC<CalendarViewProps> = ({
   currentDate,
-  allDoses,
+  selectedDate,
   therapies,
+  medications,
+  storedDoses,
+  profiles,
+  activeProfileId,
   onSelectDate,
   onTakeDose,
+  onSkipDose,
+  onUndoDose,
+  onEditDoseNote,
 }) => {
-  const [selectedDate, setSelectedDate] = useState<string>(currentDate);
+  // Default expanded Monthly Grid view (Q1)
+  const [viewMode, setViewMode] = useState<'month' | 'week'>('month');
+  const [displayedMonth, setDisplayedMonth] = useState<{ year: number; month: number }>(() =>
+    parseYearMonth(selectedDate)
+  );
 
-  const selectedDoses = allDoses.filter((d) => d.date === selectedDate);
+  useEffect(() => {
+    const parsed = parseYearMonth(selectedDate);
+    setDisplayedMonth((prev) =>
+      prev.year === parsed.year && prev.month === parsed.month ? prev : parsed
+    );
+  }, [selectedDate]);
 
-  // Helper to change day
-  const changeDay = (offset: number) => {
-    const newStr = addDaysToDateStr(selectedDate, offset);
-    setSelectedDate(newStr);
-    onSelectDate(newStr);
+  const selectedDoses = useMemo(
+    () => buildDosesForDate(selectedDate, therapies, medications, storedDoses, activeProfileId),
+    [selectedDate, therapies, medications, storedDoses, activeProfileId]
+  );
+
+  const monthCells = useMemo(
+    () => getMonthCalendarCells(displayedMonth.year, displayedMonth.month),
+    [displayedMonth.year, displayedMonth.month]
+  );
+
+  const weekDates = useMemo(() => getWeekCalendarDates(selectedDate), [selectedDate]);
+
+  const navigatePrev = () => {
+    if (viewMode === 'month') {
+      setDisplayedMonth((prev) =>
+        prev.month === 1 ? { year: prev.year - 1, month: 12 } : { year: prev.year, month: prev.month - 1 }
+      );
+    } else {
+      onSelectDate(addDaysToDateStr(selectedDate, -7));
+    }
   };
 
-  // Generate 7-day strip around selected date
-  const generateWeekDays = () => {
-    const days = [];
-    for (let i = -3; i <= 3; i++) {
-      const iso = addDaysToDateStr(selectedDate, i);
-      const d = new Date(`${iso}T12:00:00Z`);
-      const dayName = d.toLocaleDateString('pl-PL', { weekday: 'short', timeZone: 'UTC' });
-      const dayNum = d.getUTCDate();
-      const dosesForDay = allDoses.filter((item) => item.date === iso);
-      const allDone = dosesForDay.length > 0 && dosesForDay.every((item) => item.status === 'taken');
-      const hasDoses = dosesForDay.length > 0;
-      days.push({ iso, dayName, dayNum, allDone, hasDoses });
+  const navigateNext = () => {
+    if (viewMode === 'month') {
+      setDisplayedMonth((prev) =>
+        prev.month === 12 ? { year: prev.year + 1, month: 1 } : { year: prev.year, month: prev.month + 1 }
+      );
+    } else {
+      onSelectDate(addDaysToDateStr(selectedDate, 7));
     }
-    return days;
   };
 
-  const weekDays = generateWeekDays();
+  const jumpToToday = () => {
+    const todayYm = parseYearMonth(currentDate);
+    setDisplayedMonth(todayYm);
+    onSelectDate(currentDate);
+  };
 
-  // Group selected date doses by therapy
-  const dosesByTherapy: Record<string, DoseItem[]> = {};
-  selectedDoses.forEach((d) => {
-    if (!dosesByTherapy[d.therapyId]) {
-      dosesByTherapy[d.therapyId] = [];
-    }
-    dosesByTherapy[d.therapyId].push(d);
-  });
+  const monthTitle = useMemo(() => {
+    const d = new Date(Date.UTC(displayedMonth.year, displayedMonth.month - 1, 1, 12, 0, 0));
+    const raw = d.toLocaleDateString('pl-PL', {
+      month: 'long',
+      year: 'numeric',
+      timeZone: 'UTC',
+    });
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
+  }, [displayedMonth.year, displayedMonth.month]);
 
-  const formattedDateString = new Date(selectedDate + 'T12:00:00Z').toLocaleDateString('pl-PL', {
+  const formattedSelectedDate = new Date(`${selectedDate}T12:00:00Z`).toLocaleDateString('pl-PL', {
     weekday: 'long',
     day: 'numeric',
     month: 'long',
     year: 'numeric',
+    timeZone: 'UTC',
   });
+
+  // Group selected date doses by therapy preserving order
+  const therapyMap = useMemo(() => new Map(therapies.map((t) => [t.id, t])), [therapies]);
+  const profileMap = useMemo(() => new Map(profiles.map((p) => [p.id, p])), [profiles]);
+
+  const groupedTherapyIds = useMemo(() => {
+    const ids: string[] = [];
+    selectedDoses.forEach((d) => {
+      if (!ids.includes(d.therapyId)) ids.push(d.therapyId);
+    });
+    return ids;
+  }, [selectedDoses]);
+
+  const isTodayDisplayed =
+    selectedDate === currentDate &&
+    displayedMonth.year === parseYearMonth(currentDate).year &&
+    displayedMonth.month === parseYearMonth(currentDate).month;
 
   return (
     <div className="space-y-4">
-      {/* Date Header & Day Switcher */}
-      <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-2xs">
-        <div className="flex items-center justify-between mb-3">
-          <button
-            type="button"
-            onClick={() => changeDay(-1)}
-            aria-label="Poprzedni dzień"
-            className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 transition-colors"
-          >
-            <ChevronLeft className="w-5 h-5" />
-          </button>
-          
-          <div className="text-center">
-            <span className="text-xs uppercase tracking-wider font-bold text-teal-700 bg-teal-50 px-2.5 py-0.5 rounded-full inline-block mb-0.5">
-              Kalendarz Terapii
-            </span>
-            <h3 className="font-bold text-slate-800 text-sm capitalize">
-              {formattedDateString}
-            </h3>
+      {/* Monthly / Weekly Calendar Card */}
+      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/80 shadow-2xs space-y-3">
+        {/* Header Navigation */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={navigatePrev}
+              aria-label={viewMode === 'month' ? 'Poprzedni miesiąc' : 'Poprzedni tydzień'}
+              className="min-w-[36px] min-h-[36px] flex items-center justify-center rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <h3 className="font-extrabold text-slate-900 text-sm px-1 tabular-nums">{monthTitle}</h3>
+            <button
+              type="button"
+              onClick={navigateNext}
+              aria-label={viewMode === 'month' ? 'Następny miesiąc' : 'Następny tydzień'}
+              className="min-w-[36px] min-h-[36px] flex items-center justify-center rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
           </div>
 
-          <button
-            type="button"
-            onClick={() => changeDay(1)}
-            aria-label="Następny dzień"
-            className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 transition-colors"
-          >
-            <ChevronRight className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1.5">
+            {!isTodayDisplayed && (
+              <button
+                type="button"
+                onClick={jumpToToday}
+                className="min-h-[32px] px-2.5 py-1 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-800 text-[11px] font-bold transition-colors"
+              >
+                Dziś
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setViewMode((m) => (m === 'month' ? 'week' : 'month'))}
+              className="min-h-[32px] px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-bold flex items-center gap-1 transition-colors"
+              title={viewMode === 'month' ? 'Zwiń do widoku tygodnia' : 'Rozwiń widok miesiąca'}
+            >
+              <span>{viewMode === 'month' ? 'Tydzień' : 'Miesiąc'}</span>
+              {viewMode === 'month' ? (
+                <ChevronUp className="w-3.5 h-3.5" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5" />
+              )}
+            </button>
+          </div>
         </div>
 
-        {/* 7-day horizontal picker strip */}
-        <div className="grid grid-cols-7 gap-1 pt-1 border-t border-slate-100">
-          {weekDays.map((w) => {
-            const isSelected = w.iso === selectedDate;
-            const isToday = w.iso === currentDate;
-            return (
-              <button
-                key={w.iso}
-                type="button"
-                onClick={() => {
-                  setSelectedDate(w.iso);
-                  onSelectDate(w.iso);
-                }}
-                className={`flex flex-col items-center py-2 px-1 rounded-xl transition-all relative ${
-                  isSelected
-                    ? 'bg-teal-600 text-white shadow-xs font-bold'
-                    : 'hover:bg-slate-50 text-slate-700'
-                }`}
-              >
-                <span className={`text-2xs capitalize ${isSelected ? 'text-teal-100' : 'text-slate-400'}`}>
-                  {w.dayName}
-                </span>
-                <span className="text-sm font-bold my-0.5">{w.dayNum}</span>
+        {/* Weekday headers Pn - Nd */}
+        <div className="grid grid-cols-7 gap-1 pt-1 border-t border-slate-100 text-center">
+          {WEEKDAY_LABELS.map((label) => (
+            <div key={label} className="text-[10px] font-bold uppercase text-slate-400 py-0.5">
+              {label}
+            </div>
+          ))}
+        </div>
 
-                {/* Status dot */}
-                {w.hasDoses && (
+        {/* Calendar Grid: Month or Week */}
+        {viewMode === 'month' ? (
+          <div className="grid grid-cols-7 gap-1">
+            {monthCells.map((cell) => {
+              const isSelected = cell.dateStr === selectedDate;
+              const isToday = cell.dateStr === currentDate;
+              const { status } = getDayComplianceStatus(
+                cell.dateStr,
+                currentDate,
+                therapies,
+                medications,
+                storedDoses,
+                activeProfileId
+              );
+              const dotClass = isSelected
+                ? DOT_COLOR_CLASSES[status].selected
+                : DOT_COLOR_CLASSES[status].normal;
+
+              return (
+                <button
+                  key={cell.dateStr}
+                  type="button"
+                  onClick={() => onSelectDate(cell.dateStr)}
+                  className={`min-h-[42px] flex flex-col items-center justify-center rounded-xl transition-all tabular-nums ${
+                    isSelected
+                      ? 'bg-teal-700 text-white font-extrabold shadow-2xs'
+                      : isToday
+                      ? 'ring-1 ring-teal-600 bg-teal-50/40 text-teal-900 font-bold hover:bg-teal-50'
+                      : cell.inCurrentMonth
+                      ? 'text-slate-800 hover:bg-slate-100 font-semibold'
+                      : 'text-slate-300 hover:bg-slate-50 font-medium'
+                  }`}
+                >
+                  <span className="text-xs leading-none">{cell.day}</span>
                   <span
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      isSelected
-                        ? w.allDone
-                          ? 'bg-emerald-300'
-                          : 'bg-amber-300'
-                        : w.allDone
-                        ? 'bg-emerald-500'
-                        : 'bg-amber-500'
-                    }`}
+                    className={`w-1.5 h-1.5 rounded-full mt-1 ${
+                      !cell.inCurrentMonth && !isSelected && status !== 'none' ? 'opacity-40' : ''
+                    } ${dotClass}`}
                   />
-                )}
-                {isToday && !isSelected && (
-                  <span className="absolute -top-1 w-1.5 h-1.5 rounded-full bg-teal-600" />
-                )}
-              </button>
-            );
-          })}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="grid grid-cols-7 gap-1">
+            {weekDates.map((dateStr) => {
+              const dayNum = parseInt(dateStr.slice(8, 10), 10);
+              const isSelected = dateStr === selectedDate;
+              const isToday = dateStr === currentDate;
+              const { status } = getDayComplianceStatus(
+                dateStr,
+                currentDate,
+                therapies,
+                medications,
+                storedDoses,
+                activeProfileId
+              );
+              const dotClass = isSelected
+                ? DOT_COLOR_CLASSES[status].selected
+                : DOT_COLOR_CLASSES[status].normal;
+
+              return (
+                <button
+                  key={dateStr}
+                  type="button"
+                  onClick={() => onSelectDate(dateStr)}
+                  className={`min-h-[46px] flex flex-col items-center justify-center rounded-xl transition-all tabular-nums ${
+                    isSelected
+                      ? 'bg-teal-700 text-white font-extrabold shadow-2xs'
+                      : isToday
+                      ? 'ring-1 ring-teal-600 bg-teal-50/40 text-teal-900 font-bold hover:bg-teal-50'
+                      : 'text-slate-800 hover:bg-slate-100 font-semibold'
+                  }`}
+                >
+                  <span className="text-sm leading-none">{dayNum}</span>
+                  <span className={`w-1.5 h-1.5 rounded-full mt-1.5 ${dotClass}`} />
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Accessible Dot Color Legend */}
+        <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[10px] text-slate-500 font-medium">
+          <span className="inline-flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+            Przyjęte
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-amber-500" />
+            Częściowo
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-rose-500" />
+            Braki
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-sky-500" />
+            Plan
+          </span>
         </div>
       </div>
 
-      {/* Therapy Compliance Summary */}
+      {/* Selected Day Header & Summary */}
       <div className="space-y-3">
-        <div className="flex items-center justify-between px-1">
-          <h4 className="font-bold text-slate-800 text-sm">Status Terapii w wybranym dniu</h4>
-          <span className="text-xs text-slate-500 font-medium">
-            {selectedDoses.filter((d) => d.status === 'taken').length} z {selectedDoses.length} dawek zażytych
-          </span>
+        <div className="flex items-center justify-between px-1 gap-2">
+          <div>
+            <h4 className="font-bold text-slate-900 text-sm capitalize">{formattedSelectedDate}</h4>
+            <p className="text-[11px] text-slate-500 tabular-nums">
+              {selectedDoses.filter((d) => d.status === 'taken').length} z {selectedDoses.length} dawek zażytych
+            </p>
+          </div>
         </div>
 
-        {therapies.map((therapy) => {
-          const therapyDoses = dosesByTherapy[therapy.id] || [];
+        {groupedTherapyIds.map((therapyId) => {
+          const therapy = therapyMap.get(therapyId);
+          const therapyDoses = selectedDoses.filter((d) => d.therapyId === therapyId);
           if (therapyDoses.length === 0) return null;
 
-          const isCompleted = isTherapyCompletedForDate(allDoses.filter((d) => d.date === selectedDate), therapy.id);
+          const isCompleted = isTherapyCompletedForDate(selectedDoses, therapyId);
+          const therapyColor = therapy?.color || therapyDoses[0].therapyColor || '#0F766E';
+          const therapyName = therapy?.name || therapyDoses[0].therapyName || 'Terapia';
+          const profId = resolveProfileId(therapy?.profileId, undefined, therapy);
+          const profileName = profileMap.get(profId)?.name;
 
           return (
             <div
-              key={therapy.id}
-              className="bg-white rounded-2xl border border-slate-200/80 p-4 shadow-2xs space-y-3"
+              key={therapyId}
+              className="bg-white rounded-2xl border border-slate-200/80 p-3.5 shadow-2xs space-y-2.5"
             >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <span className="w-3.5 h-3.5 rounded-full shrink-0" style={{ backgroundColor: therapy.color }} />
-                  <div>
-                    <h5 className="font-bold text-slate-800 text-sm">{therapy.name}</h5>
-                    {therapy.description && (
-                      <p className="text-2xs text-slate-500 line-clamp-1">{therapy.description}</p>
-                    )}
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-start gap-2.5 min-w-0">
+                  <span
+                    className="w-3 h-3 rounded-full shrink-0 mt-1"
+                    style={{ backgroundColor: therapyColor }}
+                  />
+                  <div className="min-w-0">
+                    <h5 className="font-bold text-slate-900 text-sm leading-tight truncate">
+                      {therapyName}
+                    </h5>
+                    <p className="text-[11px] text-slate-500 truncate mt-0.5">
+                      {activeProfileId === 'all' && profileName ? `${profileName}` : ''}
+                      {activeProfileId === 'all' && profileName && therapy?.description ? ' · ' : ''}
+                      {therapy?.description || ''}
+                    </p>
                   </div>
                 </div>
 
                 {isCompleted ? (
-                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> 100% zrealizowana
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 shrink-0">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                    100%
                   </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-800 border border-amber-200">
-                    <AlertCircle className="w-3.5 h-3.5 text-amber-600" /> W trakcie / Oczekuje
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-700 shrink-0">
+                    <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+                    {therapyDoses.filter((d) => d.status === 'taken').length}/{therapyDoses.length}
                   </span>
                 )}
               </div>
 
-              {/* Doses breakdown for this therapy */}
+              {/* Doses breakdown */}
               <div className="divide-y divide-slate-100 bg-slate-50/70 rounded-xl p-2.5">
                 {therapyDoses.map((d) => {
                   const isTaken = d.status === 'taken';
+                  const isSkipped = d.status === 'skipped';
+                  const isSnoozed = d.status === 'snoozed';
+                  const displayTime = isSnoozed && d.snoozedUntil ? d.snoozedUntil : d.time;
+
                   return (
-                    <div key={d.id} className="py-2 first:pt-0 last:pb-0 flex items-center justify-between text-xs">
-                      <div className="flex items-center gap-2.5">
-                        <span className="font-bold text-slate-700 flex items-center gap-1 bg-white px-2 py-0.5 rounded-md border border-slate-200">
-                          <Clock className="w-3 h-3 text-slate-400" />
-                          {d.time}
-                        </span>
-                        <div>
-                          <span className={`font-semibold ${isTaken ? 'line-through text-slate-400' : 'text-slate-800'}`}>
-                            {d.medicationName}
+                    <div key={d.id} className="py-2.5 first:pt-0.5 last:pb-0.5 space-y-2">
+                      <div className="flex items-start justify-between gap-2 text-xs">
+                        <div className="flex items-start gap-2 min-w-0">
+                          <span
+                            className={`font-bold flex items-center gap-1 px-2 py-0.5 rounded-md border tabular-nums shrink-0 ${
+                              isTaken
+                                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                                : isSnoozed
+                                ? 'bg-amber-50 border-amber-200 text-amber-900'
+                                : 'bg-white border-slate-200 text-slate-700'
+                            }`}
+                          >
+                            <Clock className="w-3 h-3 opacity-70" />
+                            {displayTime}
                           </span>
-                          <span className="text-slate-500 ml-1.5">({formatDoseDisplay(d.doseAmount, d.type)})</span>
+                          <div className="min-w-0">
+                            <div
+                              className={`font-bold truncate ${
+                                isTaken || isSkipped ? 'line-through text-slate-400' : 'text-slate-900'
+                              }`}
+                            >
+                              {d.medicationName}
+                            </div>
+                            <div className="text-[11px] text-slate-500">
+                              <strong className="text-teal-800">
+                                {formatDoseDisplay(d.doseAmount, d.type)}
+                              </strong>
+                              {d.instructions ? ` · ${d.instructions}` : ''}
+                            </div>
+                            {d.note && (
+                              <div className="mt-1 text-[11px] text-amber-900 bg-amber-50/90 border border-amber-200/80 rounded-md px-2 py-0.5">
+                                {d.note}
+                              </div>
+                            )}
+                          </div>
                         </div>
+
+                        {onEditDoseNote && (
+                          <button
+                            type="button"
+                            onClick={() => onEditDoseNote(d)}
+                            title={d.note ? 'Edytuj notatkę' : 'Dodaj notatkę'}
+                            aria-label="Notatka do dawki"
+                            className={`p-1 rounded-md shrink-0 transition-colors ${
+                              d.note
+                                ? 'text-amber-600 bg-amber-50 hover:bg-amber-100'
+                                : 'text-slate-400 hover:text-teal-700 hover:bg-white'
+                            }`}
+                          >
+                            <StickyNote className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
 
-                      {isTaken ? (
-                        <span className="text-emerald-600 font-bold flex items-center gap-1 text-2xs bg-emerald-50 px-2 py-0.5 rounded-md">
-                          <Check className="w-3 h-3" /> Wzięte {d.takenAt ? `o ${d.takenAt}` : ''}
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => onTakeDose(d.id)}
-                          className="px-2.5 py-1 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-2xs font-bold transition-colors shadow-2xs"
-                        >
-                          Wziąłem
-                        </button>
-                      )}
+                      {/* Dose Actions Row: Pending/Snoozed vs Taken/Skipped */}
+                      <div className="flex items-center justify-between gap-2 pt-0.5">
+                        {!isTaken && !isSkipped ? (
+                          <div className="flex items-center gap-1.5 w-full">
+                            <button
+                              type="button"
+                              onClick={() => onTakeDose(d)}
+                              className="flex-1 min-h-[34px] px-2.5 py-1 bg-teal-700 hover:bg-teal-800 text-white rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 transition-colors"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                              <span>Wziąłem</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onSkipDose(d)}
+                              className="min-h-[34px] px-2.5 py-1 bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 rounded-lg text-[11px] font-semibold transition-colors"
+                            >
+                              Pomiń
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            {isTaken ? (
+                              <span className="text-emerald-700 font-bold flex items-center gap-1 text-[11px] tabular-nums">
+                                <Check className="w-3.5 h-3.5" />
+                                Wzięte {d.takenAt ? `o ${d.takenAt}` : ''}
+                              </span>
+                            ) : (
+                              <span className="text-slate-500 font-semibold text-[11px]">
+                                Pominięte
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => onUndoDose(d.id)}
+                              className="min-h-[32px] px-2.5 py-1 rounded-lg bg-white hover:bg-teal-50 border border-slate-200 text-teal-800 text-[11px] font-bold flex items-center gap-1 transition-colors"
+                            >
+                              <Undo2 className="w-3 h-3" />
+                              <span>Cofnij</span>
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -225,10 +497,12 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
         })}
 
         {selectedDoses.length === 0 && (
-          <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center">
-            <CalendarIcon className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-            <p className="text-slate-600 text-sm font-semibold">Brak zaplanowanych leków w tym dniu</p>
-            <p className="text-slate-400 text-xs mt-1">Wybierz inny dzień lub zaplanuj nową terapię.</p>
+          <div className="bg-white rounded-2xl border border-slate-200/80 p-7 text-center">
+            <CalendarIcon className="w-9 h-9 text-slate-300 mx-auto mb-2" />
+            <p className="text-slate-700 text-sm font-bold">Brak zaplanowanych leków w tym dniu</p>
+            <p className="text-slate-400 text-xs mt-1">
+              Wybierz inny dzień lub zmień aktywny profil użytkownika.
+            </p>
           </div>
         )}
       </div>

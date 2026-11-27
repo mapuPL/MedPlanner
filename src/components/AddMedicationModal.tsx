@@ -1,13 +1,28 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Plus, Trash2, Clock, Calendar, Check, AlertCircle, Search, Sparkles, Database } from 'lucide-react';
-import { Therapy, Medication, MedicationType, ScheduleType, MEDICATION_TYPE_LABELS, formatLocalDate } from '../utils/medicationLogic';
+import { X, Plus, Trash2, Clock, Calendar, AlertCircle, Search, Database } from 'lucide-react';
+import {
+  Therapy,
+  Medication,
+  MedicationType,
+  ScheduleType,
+  FamilyProfile,
+  MEDICATION_TYPE_LABELS,
+  UNIFIED_DOSAGE_TYPES,
+  extractPureDoseAmount,
+  formatLocalDate,
+  validateDateRange,
+} from '../utils/medicationLogic';
 import { searchMedicines, RegisteredMedicine } from '../data/polishMedicationsRegistry';
 
 interface AddMedicationModalProps {
   isOpen: boolean;
   therapies: Therapy[];
+  profiles?: FamilyProfile[];
+  initialTherapyId?: string | null;
+  medicationToEdit?: Medication | null;
   onClose: () => void;
   onSave: (medication: Omit<Medication, 'id'>) => void;
+  onUpdate?: (medication: Medication, changeReason?: string) => void;
   onOpenAddTherapy: () => void;
 }
 
@@ -24,8 +39,12 @@ const WEEKDAYS = [
 export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
   isOpen,
   therapies,
+  profiles = [],
+  initialTherapyId = null,
+  medicationToEdit = null,
   onClose,
   onSave,
+  onUpdate,
   onOpenAddTherapy,
 }) => {
   const [therapyId, setTherapyId] = useState<string>(therapies[0]?.id || '');
@@ -37,10 +56,11 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
   const [newTimeInput, setNewTimeInput] = useState('14:00');
   const [scheduleType, setScheduleType] = useState<ScheduleType>('daily');
   const [selectedDays, setSelectedDays] = useState<number[]>([1, 2, 3, 4, 5, 6, 7]);
-  const [startDate, setStartDate] = useState(formatLocalDate());
+  const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [packageSize, setPackageSize] = useState('30');
   const [expiryDate, setExpiryDate] = useState('');
+  const [changeReason, setChangeReason] = useState('');
   const [error, setError] = useState('');
 
   // Stan wyszukiwarki leków w rejestrze URPL
@@ -55,6 +75,28 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
     }
   });
   const searchContainerRef = useRef<HTMLDivElement>(null);
+
+  const isEditing = Boolean(medicationToEdit);
+
+  const resetAllFields = (preferredTherapyId: string) => {
+    setTherapyId(preferredTherapyId);
+    setName('');
+    setType('capsule');
+    setDoseAmount('1');
+    setInstructions('');
+    setTimes(['08:00', '20:00']);
+    setNewTimeInput('14:00');
+    setScheduleType('daily');
+    setSelectedDays([1, 2, 3, 4, 5, 6, 7]);
+    setStartDate('');
+    setEndDate('');
+    setPackageSize('30');
+    setExpiryDate('');
+    setChangeReason('');
+    setError('');
+    setSuggestions([]);
+    setShowSuggestions(false);
+  };
 
   // Zamykanie podpowiedzi przy kliknięciu poza obszarem
   useEffect(() => {
@@ -81,11 +123,11 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
     }
   };
 
-  // Wybór leku z bazy - automatyczne uzupełnienie postaci, dawki i zaleceń
+  // Wybór leku z bazy - automatyczne uzupełnienie postaci, czystej ilości i zaleceń
   const handleSelectMedicine = (med: RegisteredMedicine) => {
     setName(med.name);
     setType(med.defaultType);
-    setDoseAmount(med.defaultDose);
+    setDoseAmount(extractPureDoseAmount(med.defaultDose));
     if (med.instructions) {
       setInstructions(med.instructions);
     }
@@ -95,13 +137,15 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
   // Koło ratunkowe - dodanie wpisanego leku jako własnego
   const handleAddAsCustomMedicine = () => {
     if (!name.trim()) return;
+    const pureDose = extractPureDoseAmount(doseAmount);
     const newCustomMed: RegisteredMedicine = {
       id: `custom_${Date.now()}`,
       name: name.trim(),
       substance: 'Lek własny / niestandardowy',
       category: 'Leki Własne',
       defaultType: type,
-      defaultDose: doseAmount,
+      defaultDose: pureDose,
+      dosageUnit: MEDICATION_TYPE_LABELS[type]?.unit,
       instructions: instructions || 'Zgodnie z zaleceniami',
       isCustom: true,
     };
@@ -113,14 +157,57 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
     setShowSuggestions(false);
   };
 
-  // Update selected therapy when modal opens
+  // Synchronize therapy selection, prefill edit target, or clean reset when modal opens/closes
   useEffect(() => {
-    if (therapies.length > 0 && !therapyId) {
-      setTherapyId(therapies[0].id);
+    if (!isOpen) {
+      resetAllFields(therapies[0]?.id || '');
+      return;
     }
-  }, [therapies, therapyId]);
+
+    if (medicationToEdit) {
+      setTherapyId(medicationToEdit.therapyId || therapies[0]?.id || '');
+      setName(medicationToEdit.name);
+      setType(medicationToEdit.type);
+      setDoseAmount(extractPureDoseAmount(medicationToEdit.doseAmount));
+      setInstructions(medicationToEdit.instructions || '');
+      setTimes(
+        medicationToEdit.times.length > 0 ? [...medicationToEdit.times] : ['08:00']
+      );
+      setNewTimeInput('14:00');
+      setScheduleType(medicationToEdit.scheduleType);
+      setSelectedDays(
+        medicationToEdit.selectedDays && medicationToEdit.selectedDays.length > 0
+          ? [...medicationToEdit.selectedDays]
+          : [1, 2, 3, 4, 5, 6, 7]
+      );
+      setStartDate(medicationToEdit.startDate || '');
+      setEndDate(medicationToEdit.endDate || '');
+      const stockVal = medicationToEdit.stockQuantity ?? medicationToEdit.packageSize;
+      setPackageSize(stockVal !== undefined ? String(stockVal) : '');
+      setExpiryDate(medicationToEdit.expiryDate || '');
+      setChangeReason('');
+      setError('');
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+
+    const preferred =
+      (initialTherapyId && therapies.some((t) => t.id === initialTherapyId)
+        ? initialTherapyId
+        : null) ||
+      therapies.find((t) => t.isActive)?.id ||
+      therapies[0]?.id ||
+      '';
+    resetAllFields(preferred);
+  }, [isOpen, initialTherapyId, medicationToEdit, therapies]);
 
   if (!isOpen) return null;
+
+  const handleClose = () => {
+    resetAllFields(therapies[0]?.id || '');
+    onClose();
+  };
 
   const handleAddTime = () => {
     if (!newTimeInput) return;
@@ -173,36 +260,81 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
       return;
     }
 
-    const parsedPkg = parseFloat(packageSize.replace(',', '.'));
-    const validPkg = Number.isFinite(parsedPkg) && parsedPkg > 0 ? parsedPkg : undefined;
-    const selectedTherapy = therapies.find((t) => t.id === therapyId);
+    const dateErr = validateDateRange(startDate, endDate);
+    if (dateErr) {
+      setError(dateErr);
+      return;
+    }
 
+    const parsedStock = parseFloat(packageSize.replace(',', '.'));
+    const hasStockValue = Number.isFinite(parsedStock) && parsedStock >= 0;
+    const selectedTherapy = therapies.find((t) => t.id === therapyId);
+    const pureDose = extractPureDoseAmount(doseAmount);
+
+    if (medicationToEdit && onUpdate) {
+      const nextStock = hasStockValue ? parsedStock : undefined;
+      const nextPackageSize = hasStockValue
+        ? Math.max(medicationToEdit.packageSize ?? 0, parsedStock) || medicationToEdit.packageSize
+        : medicationToEdit.packageSize;
+
+      onUpdate(
+        {
+          ...medicationToEdit,
+          therapyId,
+          profileId: selectedTherapy?.profileId || medicationToEdit.profileId || 'self',
+          name: name.trim(),
+          type,
+          doseAmount: pureDose,
+          instructions: instructions.trim() || undefined,
+          times,
+          scheduleType,
+          selectedDays: scheduleType === 'specific_days' ? selectedDays : undefined,
+          startDate: startDate || medicationToEdit.startDate || formatLocalDate(),
+          endDate: endDate || undefined,
+          packageSize: nextPackageSize,
+          stockQuantity: nextStock,
+          lowStockThreshold: nextPackageSize
+            ? Math.max(3, Math.round(nextPackageSize * 0.15))
+            : medicationToEdit.lowStockThreshold ?? 5,
+          expiryDate: expiryDate || undefined,
+        },
+        changeReason.trim() || undefined
+      );
+      handleClose();
+      return;
+    }
+
+    const validPkg = Number.isFinite(parsedStock) && parsedStock > 0 ? parsedStock : undefined;
     onSave({
       therapyId,
       profileId: selectedTherapy?.profileId || 'self',
       name: name.trim(),
       type,
-      doseAmount: doseAmount.trim(),
+      doseAmount: pureDose,
       instructions: instructions.trim() || undefined,
       times,
       scheduleType,
       selectedDays: scheduleType === 'specific_days' ? selectedDays : undefined,
-      startDate,
-      endDate: scheduleType === 'date_range' && endDate ? endDate : undefined,
+      startDate: startDate || formatLocalDate(),
+      endDate: endDate || undefined,
       packageSize: validPkg,
       stockQuantity: validPkg,
       lowStockThreshold: validPkg ? Math.max(3, Math.round(validPkg * 0.15)) : 5,
       expiryDate: expiryDate || undefined,
     });
 
-    onClose();
+    handleClose();
   };
 
   const currentUnit = MEDICATION_TYPE_LABELS[type]?.unit || 'dawka';
+  const selectedTherapy = therapies.find((t) => t.id === therapyId);
+  const selectedProfile = selectedTherapy
+    ? profiles.find((p) => p.id === (selectedTherapy.profileId || 'self'))
+    : undefined;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto animate-in fade-in duration-200">
-      <div 
+      <div
         className="w-full max-w-lg bg-white rounded-2xl shadow-2xl overflow-hidden border border-slate-100 my-8"
         role="dialog"
         aria-modal="true"
@@ -211,11 +343,11 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 bg-slate-50">
           <h2 id="med-modal-title" className="font-bold text-slate-800 text-lg flex items-center gap-2">
             <span className="p-1.5 rounded-lg bg-teal-100 text-teal-800">💊</span>
-            Dodaj Lek do Terapii
+            {isEditing ? 'Edytuj Lek w Terapii' : 'Dodaj Lek do Terapii'}
           </h2>
-          <button 
+          <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             aria-label="Zamknij formularz leku"
             className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
           >
@@ -257,18 +389,35 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
                 </button>
               </div>
             ) : (
-              <select
-                id="med-therapy"
-                value={therapyId}
-                onChange={(e) => setTherapyId(e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-slate-900 bg-white focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:border-teal-500 text-sm"
-              >
-                {therapies.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
+              <>
+                <select
+                  id="med-therapy"
+                  value={therapyId}
+                  onChange={(e) => setTherapyId(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-slate-900 bg-white focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:border-teal-500 text-sm"
+                >
+                  {therapies.map((t) => {
+                    const prof = profiles.find((p) => p.id === (t.profileId || 'self'));
+                    const profileLabel = prof ? ` · ${prof.name}` : '';
+                    return (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                        {profileLabel}
+                        {!t.isActive ? ' (Wstrzymana)' : ''}
+                      </option>
+                    );
+                  })}
+                </select>
+                {selectedTherapy && (
+                  <p className="mt-1.5 text-[11px] font-semibold text-teal-700 flex items-center gap-1.5">
+                    <span
+                      className="w-2 h-2 rounded-full inline-block"
+                      style={{ backgroundColor: selectedProfile?.avatarColor || selectedTherapy.color }}
+                    />
+                    <span>Profil pacjenta: {selectedProfile?.name || 'Mój profil'}</span>
+                  </p>
+                )}
+              </>
             )}
           </div>
 
@@ -297,7 +446,7 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
                   }
                 }}
                 placeholder="Wpisz np. Amotaks, Ibuprofen, Polprazol, Euthyrox..."
-                className="w-full pl-9 pr-3.5 py-2.5 rounded-xl border border-slate-300 text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:border-teal-500 text-sm"
+                className="w-full pl-9 pr-8 py-2.5 rounded-xl border border-slate-300 text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:border-teal-500 text-sm"
               />
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               {name && (
@@ -345,13 +494,12 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
                     </div>
                     <div className="shrink-0 text-right">
                       <span className="inline-block px-1.5 py-0.5 rounded text-3xs font-bold bg-slate-100 text-slate-600 group-hover:bg-teal-100 group-hover:text-teal-800">
-                        {MEDICATION_TYPE_LABELS[med.defaultType]?.label || med.defaultType}
+                        {MEDICATION_TYPE_LABELS[med.defaultType]?.unit || med.defaultType}
                       </span>
                     </div>
                   </button>
                 ))}
 
-                {/* Koło ratunkowe: dodanie wpisanej nazwy jako własnego leku */}
                 {name.trim() && (
                   <button
                     type="button"
@@ -366,11 +514,11 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
             )}
           </div>
 
-          {/* Typ leku i dawka */}
+          {/* Typ leku (6 typów zgodnych z MedicationType) i czysta dawka */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label htmlFor="med-type" className="block text-sm font-semibold text-slate-700 mb-1">
-                Typ leku (postać) *
+                Typ leku (jednostka) *
               </label>
               <select
                 id="med-type"
@@ -378,12 +526,11 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
                 onChange={(e) => setType(e.target.value as MedicationType)}
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-slate-900 bg-white focus:outline-hidden focus:ring-2 focus:ring-teal-500 focus:border-teal-500 text-sm"
               >
-                <option value="capsule">Kapsułka / Tabletka</option>
-                <option value="drops">Krople</option>
-                <option value="ml">ml (płyn / syrop)</option>
-                <option value="inhaler">Wziew</option>
-                <option value="application">Aplikacja (maść / aerozol)</option>
-                <option value="other">Inne</option>
+                {UNIFIED_DOSAGE_TYPES.map((opt) => (
+                  <option key={opt.type} value={opt.type}>
+                    {opt.label}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -395,6 +542,7 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
                 <input
                   id="med-amount"
                   type="text"
+                  inputMode="decimal"
                   value={doseAmount}
                   onChange={(e) => setDoseAmount(e.target.value)}
                   placeholder="np. 1, 5, 2.5"
@@ -426,13 +574,13 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 rounded-xl bg-teal-50/50 border border-teal-200/70">
             <div>
               <label htmlFor="med-package-size" className="block text-xs font-bold text-slate-700 mb-1">
-                Stan opakowania ({currentUnit})
+                {isEditing ? `Stan apteczki (${currentUnit})` : `Stan opakowania (${currentUnit})`}
               </label>
               <input
                 id="med-package-size"
                 type="number"
-                min="1"
-                step="1"
+                min="0"
+                step="any"
                 value={packageSize}
                 onChange={(e) => setPackageSize(e.target.value)}
                 placeholder="np. 30"
@@ -462,7 +610,6 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
               <span className="text-xs text-slate-500 font-medium">{times.length} dawek na dobę</span>
             </div>
 
-            {/* Lista dodanych godzin */}
             <div className="flex flex-wrap gap-2">
               {times.map((t) => (
                 <div
@@ -482,7 +629,6 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
               ))}
             </div>
 
-            {/* Dodawanie nowej godziny */}
             <div className="flex items-center gap-2 pt-1">
               <input
                 type="time"
@@ -532,7 +678,6 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
               })}
             </div>
 
-            {/* Opcje wyboru dni tygodnia */}
             {scheduleType === 'specific_days' && (
               <div className="mt-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
                 <span className="text-xs font-semibold text-slate-700 block mb-2">
@@ -561,29 +706,89 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
               </div>
             )}
 
-            {/* Opcje zakresu dat */}
-            {scheduleType === 'date_range' && (
-              <div className="mt-3 p-3 bg-slate-50 rounded-xl border border-slate-200 grid grid-cols-2 gap-2">
+            {/* Zakres dat stosowania (opcjonalnie) */}
+            <div className="mt-3 p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+              <span className="text-xs font-semibold text-slate-700 block">
+                Zakres dat stosowania (opcjonalnie):
+              </span>
+              <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label htmlFor="start-date-input" className="block text-2xs font-semibold text-slate-600 mb-1">Od daty</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label htmlFor="start-date-input" className="text-2xs font-semibold text-slate-600">
+                      Od daty
+                    </label>
+                    {startDate && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStartDate('');
+                          if (error) setError('');
+                        }}
+                        className="text-[10px] font-bold text-teal-700 hover:underline"
+                      >
+                        Wyczyść
+                      </button>
+                    )}
+                  </div>
                   <input
                     id="start-date-input"
                     type="date"
                     value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
+                    onChange={(e) => {
+                      setStartDate(e.target.value);
+                      if (error) setError('');
+                    }}
                     className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs"
                   />
                 </div>
                 <div>
-                  <label htmlFor="end-date-input" className="block text-2xs font-semibold text-slate-600 mb-1">Do daty (opcjonalnie)</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label htmlFor="end-date-input" className="text-2xs font-semibold text-slate-600">
+                      Do daty
+                    </label>
+                    {endDate && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEndDate('');
+                          if (error) setError('');
+                        }}
+                        className="text-[10px] font-bold text-teal-700 hover:underline"
+                      >
+                        Wyczyść
+                      </button>
+                    )}
+                  </div>
                   <input
                     id="end-date-input"
                     type="date"
                     value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
+                    onChange={(e) => {
+                      setEndDate(e.target.value);
+                      if (error) setError('');
+                    }}
                     className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs"
                   />
                 </div>
+              </div>
+            </div>
+
+            {isEditing && (
+              <div className="mt-3 p-3 bg-amber-50/60 rounded-xl border border-amber-200/80 space-y-1.5">
+                <label htmlFor="med-change-reason" className="block text-xs font-bold text-slate-800">
+                  Powód zmiany dawki lub harmonogramu (opcjonalnie)
+                </label>
+                <input
+                  id="med-change-reason"
+                  type="text"
+                  value={changeReason}
+                  onChange={(e) => setChangeReason(e.target.value)}
+                  placeholder="np. Zalecenie lekarza po badaniach kontrolnych"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white text-xs text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-teal-500"
+                />
+                <p className="text-[11px] text-slate-500">
+                  Zapisze się w historii zmian leku (widocznej w raporcie PDF dla lekarza).
+                </p>
               </div>
             )}
           </div>
@@ -591,7 +796,7 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
           <div className="pt-2 flex items-center justify-end gap-3 border-t border-slate-100">
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleClose}
               className="px-4 py-2.5 rounded-xl text-slate-600 hover:bg-slate-100 font-medium text-sm transition-colors"
             >
               Anuluj
@@ -600,7 +805,7 @@ export const AddMedicationModal: React.FC<AddMedicationModalProps> = ({
               type="submit"
               className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-semibold text-sm shadow-sm transition-colors focus:outline-hidden focus:ring-2 focus:ring-teal-500"
             >
-              Zapisz Lek i Zaplanuj Dawki
+              {isEditing ? 'Zapisz Zmiany' : 'Zapisz Lek i Zaplanuj Dawki'}
             </button>
           </div>
         </form>

@@ -27,6 +27,14 @@ import {
   Volume2,
   Package,
   AlertTriangle,
+  Users,
+  Pencil,
+  PauseCircle,
+  PlayCircle,
+  Archive,
+  StickyNote,
+  Undo2,
+  FileText,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { normalizePolishText } from '../data/polishMedicationsRegistry';
@@ -35,12 +43,13 @@ import {
   Medication,
   DoseItem,
   FamilyProfile,
+  MedicationChangeRecord,
   calculateCompliance,
-  sortDosesChronologically,
+  buildDosesForDate,
   formatDoseDisplay,
   formatLocalDate,
   addDaysToDateStr,
-  isMedicationActiveOnDate,
+  isDoseVisibleForTherapy,
   evaluateCabinetStatus,
   MEDICATION_TYPE_LABELS,
 } from '../utils/medicationLogic';
@@ -52,23 +61,42 @@ import { NotificationBanner } from './NotificationBanner';
 import { BackupSyncView, MedPlanerBackupPayload } from './BackupSyncView';
 import { DrugDatabaseOverlay } from './DrugDatabaseOverlay';
 import { MedicineCabinetView } from './MedicineCabinetView';
+import { ProfileManagerModal, ConfirmDialogModal } from './ProfileManagerModal';
+import { TherapyPdfReportModal } from './TherapyPdfReportModal';
+
+export type SimulatorTab = 'today' | 'calendar' | 'cabinet' | 'therapies' | 'sync';
 
 interface PhoneSimulatorProps {
   therapies: Therapy[];
   medications: Medication[];
   doses: DoseItem[];
   profiles: FamilyProfile[];
+  medicationChanges: MedicationChangeRecord[];
   activeProfileId: string;
+  activeTab?: SimulatorTab;
+  onTabChange?: (tab: SimulatorTab) => void;
   onSelectProfile: (profileId: string) => void;
+  onCreateProfile: (data: Omit<FamilyProfile, 'id'>) => FamilyProfile;
+  onUpdateProfile: (profile: FamilyProfile) => void;
+  onDeleteProfile: (
+    profileId: string,
+    options: { mode: 'transfer' | 'cascade'; targetProfileId?: string }
+  ) => void;
   onTakeDose: (doseId: string, virtualDose?: DoseItem) => void;
   onSnoozeDose: (doseId: string, minutes: number, virtualDose?: DoseItem) => void;
   onSkipDose: (doseId: string, virtualDose?: DoseItem) => void;
+  onUndoDose: (doseId: string) => void;
+  onUpdateDoseNote?: (doseId: string, note: string | undefined, virtualDose?: DoseItem) => void;
   onAddTherapy: (therapy: Omit<Therapy, 'id' | 'createdAt'>) => void;
+  onUpdateTherapy: (therapy: Therapy) => void;
+  onToggleTherapyActive: (therapyId: string) => void;
+  onDeleteTherapy: (therapyId: string) => void;
   onAddMedication: (medication: Omit<Medication, 'id'>) => void;
+  onUpdateMedication?: (medication: Medication, changeReason?: string) => void;
   onDeleteMedication?: (medicationId: string) => void;
   onRefillMedication: (medicationId: string) => void;
   onUpdateStockAndExpiry: (medicationId: string, stockQuantity: number, expiryDate?: string) => void;
-  onImportBackupData: (payload: MedPlanerBackupPayload) => void;
+  onImportBackupData: (payload: MedPlanerBackupPayload, mode: 'replace' | 'merge') => void;
   onResetSampleData: () => void;
 }
 
@@ -77,29 +105,58 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
   medications,
   doses,
   profiles,
+  medicationChanges,
   activeProfileId,
+  activeTab: controlledTab,
+  onTabChange,
   onSelectProfile,
+  onCreateProfile,
+  onUpdateProfile,
+  onDeleteProfile,
   onTakeDose,
   onSnoozeDose,
   onSkipDose,
+  onUndoDose,
+  onUpdateDoseNote,
   onAddTherapy,
+  onUpdateTherapy,
+  onToggleTherapyActive,
+  onDeleteTherapy,
   onAddMedication,
+  onUpdateMedication,
   onDeleteMedication,
   onRefillMedication,
   onUpdateStockAndExpiry,
   onImportBackupData,
   onResetSampleData,
 }) => {
-  const [activeTab, setActiveTab] = useState<'today' | 'calendar' | 'cabinet' | 'therapies' | 'sync'>('today');
+  const [internalTab, setInternalTab] = useState<SimulatorTab>('today');
+  const activeTab = controlledTab ?? internalTab;
+  const setActiveTab = (tab: SimulatorTab) => {
+    setInternalTab(tab);
+    onTabChange?.(tab);
+  };
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'taken' | 'snoozed'>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
   // Modals state
   const [isAddMedOpen, setIsAddMedOpen] = useState(false);
+  const [preselectedTherapyIdForMed, setPreselectedTherapyIdForMed] = useState<string | null>(null);
+  const [editingMedicationTarget, setEditingMedicationTarget] = useState<Medication | null>(null);
   const [isAddTherapyOpen, setIsAddTherapyOpen] = useState(false);
+  const [editingTherapyTarget, setEditingTherapyTarget] = useState<Therapy | null>(null);
   const [isDrugDatabaseOpen, setIsDrugDatabaseOpen] = useState(false);
   const [isBgDiagnosisOpen, setIsBgDiagnosisOpen] = useState(false);
+  const [isProfileManagerOpen, setIsProfileManagerOpen] = useState(false);
+  const [isPdfReportOpen, setIsPdfReportOpen] = useState(false);
   const [snoozeDoseTarget, setSnoozeDoseTarget] = useState<DoseItem | null>(null);
+  const [noteDoseTarget, setNoteDoseTarget] = useState<DoseItem | null>(null);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [confirmDeleteMedTarget, setConfirmDeleteMedTarget] = useState<{
+    med: Medication;
+    therapyName: string;
+  } | null>(null);
+  const [confirmDeleteTherapyTarget, setConfirmDeleteTherapyTarget] = useState<Therapy | null>(null);
 
   // Background / Locked Phone Simulation
   const [isPhoneLocked, setIsPhoneLocked] = useState(false);
@@ -127,51 +184,26 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
     return days;
   }, [todayStr]);
 
-  // Build doses for selectedDayStr (using stored doses first, falling back to scheduled templates for active meds)
-  const dosesForSelectedDay = useMemo(() => {
-    const storedForDay = doses.filter((d) => d.date === selectedDayStr);
-    const storedIds = new Set(storedForDay.map((d) => d.id));
-    const combined: DoseItem[] = [...storedForDay];
+  // Stored doses visible according to therapy active status
+  const visibleStoredDoses = useMemo(() => {
+    return doses.filter((d) => {
+      const therapy = therapies.find((t) => t.id === d.therapyId);
+      return isDoseVisibleForTherapy(d, therapy);
+    });
+  }, [doses, therapies]);
 
-    for (const med of medications) {
-      if (!isMedicationActiveOnDate(med, selectedDayStr)) continue;
-      const therapy = therapies.find((t) => t.id === med.therapyId);
-      const profId = med.profileId || therapy?.profileId || 'self';
-      for (const time of med.times) {
-        const expectedId = `${med.id}_${selectedDayStr}_${time.replace(':', '')}`;
-        if (!storedIds.has(expectedId)) {
-          combined.push({
-            id: expectedId,
-            medicationId: med.id,
-            therapyId: med.therapyId,
-            profileId: profId,
-            medicationName: med.name,
-            therapyName: therapy?.name || 'Terapia',
-            therapyColor: therapy?.color || '#0F766E',
-            type: med.type,
-            doseAmount: med.doseAmount,
-            instructions: med.instructions,
-            date: selectedDayStr,
-            time,
-            status: 'pending',
-          });
-        }
-      }
-    }
-
-    // Apply profile filter
-    const filteredByProfile =
-      activeProfileId === 'all'
-        ? combined
-        : combined.filter((d) => {
-            const med = medications.find((m) => m.id === d.medicationId);
-            const therapy = therapies.find((t) => t.id === d.therapyId);
-            const profId = d.profileId || med?.profileId || therapy?.profileId || 'self';
-            return profId === activeProfileId;
-          });
-
-    return sortDosesChronologically(filteredByProfile);
-  }, [doses, medications, therapies, selectedDayStr, activeProfileId]);
+  // Build doses for selectedDayStr using shared schedule engine
+  const dosesForSelectedDay = useMemo(
+    () =>
+      buildDosesForDate(
+        selectedDayStr,
+        therapies,
+        medications,
+        visibleStoredDoses,
+        activeProfileId
+      ),
+    [visibleStoredDoses, medications, therapies, selectedDayStr, activeProfileId]
+  );
 
   const displayedDoses = dosesForSelectedDay.filter((d) => {
     if (statusFilter !== 'all' && d.status !== statusFilter) return false;
@@ -199,9 +231,25 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
     }).length;
   }, [medications, therapies, activeProfileId]);
 
+  const filteredTherapies = useMemo(() => {
+    return therapies.filter(
+      (t) => activeProfileId === 'all' || (t.profileId || 'self') === activeProfileId
+    );
+  }, [therapies, activeProfileId]);
+
+  const activeTherapies = useMemo(
+    () => filteredTherapies.filter((t) => t.isActive),
+    [filteredTherapies]
+  );
+
+  const pausedTherapies = useMemo(
+    () => filteredTherapies.filter((t) => !t.isActive),
+    [filteredTherapies]
+  );
+
   const playGentleChime = () => {
     try {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (!AudioCtx) return;
       const ctx = new AudioCtx();
       const osc = ctx.createOscillator();
@@ -215,7 +263,9 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
       gain.connect(ctx.destination);
       osc.start();
       osc.stop(ctx.currentTime + 0.85);
-    } catch (_) {}
+    } catch {
+      // Audio playback blocked by browser autoplay policy
+    }
   };
 
   const triggerNativeDesktopNotification = (dose: DoseItem) => {
@@ -292,9 +342,173 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
   const ringCircumference = 2 * Math.PI * ringRadius;
   const ringOffset = ringCircumference * (1 - compliance.percentage / 100);
 
+  const renderTherapyCard = (therapy: Therapy) => {
+    const therapyMeds = medications.filter((m) => m.therapyId === therapy.id);
+    const profile = profiles.find((p) => p.id === (therapy.profileId || 'self'));
+    const isPaused = !therapy.isActive;
+    const dateRangeLabel =
+      therapy.startDate && therapy.endDate
+        ? `${therapy.startDate} – ${therapy.endDate}`
+        : therapy.startDate
+        ? `Od ${therapy.startDate}`
+        : therapy.endDate
+        ? `Do ${therapy.endDate}`
+        : null;
+
+    return (
+      <div
+        key={therapy.id}
+        className={`rounded-2xl border p-4 shadow-2xs space-y-3 transition-colors ${
+          isPaused
+            ? 'bg-slate-50/90 border-slate-200/80 opacity-90'
+            : 'bg-white border-slate-200/80'
+        }`}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-start gap-2.5 min-w-0">
+            <span
+              className={`w-3.5 h-3.5 rounded-full shrink-0 mt-1 ${isPaused ? 'opacity-50' : ''}`}
+              style={{ backgroundColor: therapy.color }}
+            />
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <h4
+                  className={`font-bold text-sm leading-tight truncate ${
+                    isPaused ? 'text-slate-600' : 'text-slate-900'
+                  }`}
+                >
+                  {therapy.name}
+                </h4>
+                {isPaused && (
+                  <span className="px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-800 text-[10px] font-bold">
+                    Wstrzymana
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                {profile?.name || 'Mój profil'}
+                {dateRangeLabel ? ` · ${dateRangeLabel}` : ''}
+                {therapy.description ? ` · ${therapy.description}` : ''}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => onToggleTherapyActive(therapy.id)}
+              title={isPaused ? 'Wznów terapię' : 'Wstrzymaj terapię'}
+              className={`px-2 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1 transition-colors ${
+                isPaused
+                  ? 'bg-teal-700 hover:bg-teal-800 text-white'
+                  : 'bg-slate-100 hover:bg-amber-100 text-slate-600 hover:text-amber-800'
+              }`}
+            >
+              {isPaused ? (
+                <>
+                  <PlayCircle className="w-3 h-3" />
+                  <span>Wznów</span>
+                </>
+              ) : (
+                <>
+                  <PauseCircle className="w-3 h-3" />
+                  <span>Wstrzymaj</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setEditingTherapyTarget(therapy);
+                setIsAddTherapyOpen(true);
+              }}
+              title="Edytuj terapię"
+              aria-label={`Edytuj terapię ${therapy.name}`}
+              className="p-1.5 text-slate-400 hover:text-teal-700 hover:bg-teal-50 rounded-lg transition-colors"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setConfirmDeleteTherapyTarget(therapy)}
+              title="Usuń terapię"
+              aria-label={`Usuń terapię ${therapy.name}`}
+              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="bg-slate-50 rounded-xl p-2.5 space-y-2 border border-slate-100">
+          <div className="text-[11px] font-bold text-slate-500 flex items-center justify-between px-1">
+            <span>Leki w terapii ({therapyMeds.length})</span>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingMedicationTarget(null);
+                setPreselectedTherapyIdForMed(therapy.id);
+                setIsAddMedOpen(true);
+              }}
+              className="text-teal-700 hover:underline font-bold"
+            >
+              + Dodaj lek
+            </button>
+          </div>
+
+          {therapyMeds.length === 0 ? (
+            <p className="text-xs text-slate-400 italic px-1">Brak przypisanych leków.</p>
+          ) : (
+            therapyMeds.map((m) => (
+              <div
+                key={m.id}
+                className="bg-white p-2.5 rounded-xl border border-slate-200/80 flex items-center justify-between text-xs"
+              >
+                <div className="flex-1 min-w-0 pr-2">
+                  <div className="font-bold text-slate-900 truncate">{m.name}</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
+                    {formatDoseDisplay(m.doseAmount, m.type)} · {m.times.join(', ')}
+                    {typeof m.stockQuantity === 'number' && ` · Zapas: ${m.stockQuantity}`}
+                  </div>
+                </div>
+                <div className="flex items-center gap-0.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingMedicationTarget(m);
+                      setPreselectedTherapyIdForMed(therapy.id);
+                      setIsAddMedOpen(true);
+                    }}
+                    className="p-2 text-slate-400 hover:text-teal-700 hover:bg-teal-50 rounded-lg transition-colors"
+                    title="Edytuj lek"
+                    aria-label={`Edytuj lek ${m.name}`}
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setConfirmDeleteMedTarget({ med: m, therapyName: therapy.name })
+                    }
+                    className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                    title="Usuń lek z terapii"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="flex flex-col items-center w-full">
-      {/* Compact Simulator Utility Strip (No decorative pulsing dot) */}
+      {/* Compact Simulator Utility Strip */}
       <div className="w-full max-w-[400px] mb-3 flex items-center justify-between gap-2 px-1">
         <div className="flex items-center gap-2">
           <button
@@ -434,7 +648,11 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setIsAddMedOpen(true)}
+                  onClick={() => {
+                    setEditingMedicationTarget(null);
+                    setPreselectedTherapyIdForMed(null);
+                    setIsAddMedOpen(true);
+                  }}
                   className="px-3 py-1.5 bg-teal-700 hover:bg-teal-800 text-white rounded-xl text-xs font-bold flex items-center gap-1 transition-colors"
                   title="Dodaj nowy lek"
                 >
@@ -444,8 +662,8 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
               </div>
             </div>
 
-            {/* Profile Switcher Strip (Dawko Family Profiles) */}
-            {profiles.length > 1 && activeTab !== 'sync' && (
+            {/* Profile Switcher Strip + Manage Profiles Button */}
+            {activeTab !== 'sync' && (
               <div className="mt-2.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
                 <button
                   type="button"
@@ -479,6 +697,16 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                     </button>
                   );
                 })}
+                <button
+                  type="button"
+                  onClick={() => setIsProfileManagerOpen(true)}
+                  title="Zarządzaj profilami domowników"
+                  aria-label="Zarządzaj profilami"
+                  className="ml-auto px-2 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap bg-teal-50 text-teal-800 hover:bg-teal-100 border border-teal-200/70 flex items-center gap-1 shrink-0 transition-colors"
+                >
+                  <Users className="w-3 h-3" />
+                  <span>Osoby</span>
+                </button>
               </div>
             )}
           </div>
@@ -580,7 +808,7 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                   </div>
                 </div>
 
-                {/* Cabinet Alert Shortcut (only shown when real low stock or expiring meds exist) */}
+                {/* Cabinet Alert Shortcut */}
                 {cabinetAlertsCount > 0 && (
                   <button
                     type="button"
@@ -625,7 +853,7 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                     )}
                   </div>
 
-                  {/* Clean segmented filter tabs (No pill stack) */}
+                  {/* Clean segmented filter tabs */}
                   <div className="grid grid-cols-4 bg-slate-200/70 p-0.5 rounded-xl text-[11px] font-bold tabular-nums">
                     {[
                       { id: 'all', label: `Wszystkie (${dosesForSelectedDay.length})` },
@@ -645,7 +873,7 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                       <button
                         key={f.id}
                         type="button"
-                        onClick={() => setStatusFilter(f.id as any)}
+                        onClick={() => setStatusFilter(f.id as 'all' | 'pending' | 'taken' | 'snoozed')}
                         className={`py-1.5 px-1 rounded-lg transition-all truncate ${
                           statusFilter === f.id
                             ? 'bg-white text-slate-900 shadow-2xs'
@@ -770,53 +998,85 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                                       </div>
                                     </div>
 
-                                    {/* Unboxed Metadata + Drug Name */}
-                                    <div className="flex-1 min-w-0">
-                                      <div className="flex items-center gap-1.5 text-[11px] text-slate-500 font-medium">
-                                        <span
-                                          className="w-2 h-2 rounded-full shrink-0"
-                                          style={{ backgroundColor: dose.therapyColor }}
-                                        />
-                                        <span className="truncate">{dose.therapyName}</span>
-                                        {isTaken && dose.takenAt && (
-                                          <span className="ml-auto text-emerald-700 font-bold tabular-nums shrink-0">
-                                            o {dose.takenAt}
-                                          </span>
-                                        )}
-                                      </div>
-
-                                      <h4
-                                        className={`font-bold text-sm leading-snug mt-0.5 truncate ${
-                                          isTaken ? 'line-through text-slate-400' : 'text-slate-900'
-                                        }`}
-                                      >
-                                        {dose.medicationName}
-                                      </h4>
-
-                                      <p className="text-[11px] text-slate-600 mt-0.5 truncate">
-                                        <strong className="text-teal-800">
-                                          {formatDoseDisplay(dose.doseAmount, dose.type)}
-                                        </strong>
-                                        {dose.instructions && (
-                                          <span className="text-slate-500"> · {dose.instructions}</span>
-                                        )}
-                                      </p>
-
-                                      {linkedMed &&
-                                        stockEval?.isLowStock &&
-                                        typeof linkedMed.stockQuantity === 'number' && (
-                                          <p className="text-[11px] font-semibold text-amber-700 mt-1 flex items-center gap-1 tabular-nums">
-                                            <AlertTriangle className="w-3 h-3 shrink-0" />
-                                            <span>
-                                              Zapas: {linkedMed.stockQuantity}{' '}
-                                              {MEDICATION_TYPE_LABELS[linkedMed.type]?.unit || 'szt.'}
+                                      {/* Unboxed Metadata + Drug Name */}
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-1.5 text-[11px] text-slate-500 font-medium">
+                                          <span
+                                            className="w-2 h-2 rounded-full shrink-0"
+                                            style={{ backgroundColor: dose.therapyColor }}
+                                          />
+                                          <span className="truncate">{dose.therapyName}</span>
+                                          {isTaken && dose.takenAt && (
+                                            <span className="ml-auto text-emerald-700 font-bold tabular-nums shrink-0">
+                                              o {dose.takenAt}
                                             </span>
-                                          </p>
-                                        )}
-                                    </div>
-                                  </div>
+                                          )}
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setNoteDoseTarget(dose);
+                                              setNoteDraft(dose.note || '');
+                                            }}
+                                            title={dose.note ? 'Edytuj notatkę do dawki' : 'Dodaj notatkę do dawki'}
+                                            aria-label="Notatka do dawki"
+                                            className={`${
+                                              isTaken && dose.takenAt ? 'ml-1' : 'ml-auto'
+                                            } p-1 rounded-md transition-colors shrink-0 ${
+                                              dose.note
+                                                ? 'text-amber-600 bg-amber-50 hover:bg-amber-100'
+                                                : 'text-slate-400 hover:text-teal-700 hover:bg-slate-100'
+                                            }`}
+                                          >
+                                            <StickyNote className="w-3.5 h-3.5" />
+                                          </button>
+                                        </div>
 
-                                  {!isTaken && (
+                                        <h4
+                                          className={`font-bold text-sm leading-snug mt-0.5 truncate ${
+                                            isTaken || isSkipped ? 'line-through text-slate-400' : 'text-slate-900'
+                                          }`}
+                                        >
+                                          {dose.medicationName}
+                                        </h4>
+
+                                        <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
+                                          <strong className="text-teal-800">
+                                            {formatDoseDisplay(dose.doseAmount, dose.type)}
+                                          </strong>
+                                          {dose.instructions && (
+                                            <span className="text-slate-500"> · {dose.instructions}</span>
+                                          )}
+                                        </p>
+
+                                        {dose.note && (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setNoteDoseTarget(dose);
+                                              setNoteDraft(dose.note || '');
+                                            }}
+                                            className="mt-1.5 w-full text-left px-2.5 py-1.5 rounded-lg bg-amber-50/90 border border-amber-200/80 text-[11px] text-amber-900 flex items-center justify-between gap-2 hover:bg-amber-100/70 transition-colors"
+                                          >
+                                            <span className="truncate">{dose.note}</span>
+                                            <Pencil className="w-3 h-3 text-amber-700 shrink-0" />
+                                          </button>
+                                        )}
+
+                                        {linkedMed &&
+                                          stockEval?.isLowStock &&
+                                          typeof linkedMed.stockQuantity === 'number' && (
+                                            <p className="text-[11px] font-semibold text-amber-700 mt-1 flex items-center gap-1 tabular-nums">
+                                              <AlertTriangle className="w-3 h-3 shrink-0" />
+                                              <span>
+                                                Zapas: {linkedMed.stockQuantity}{' '}
+                                                {MEDICATION_TYPE_LABELS[linkedMed.type]?.unit || 'szt.'}
+                                              </span>
+                                            </p>
+                                          )}
+                                      </div>
+                                    </div>
+
+                                  {!isTaken && !isSkipped ? (
                                     <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center gap-2">
                                       <button
                                         type="button"
@@ -840,6 +1100,27 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                                         className="min-h-[38px] px-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 text-[11px] font-semibold"
                                       >
                                         Pomiń
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2">
+                                      {isTaken ? (
+                                        <span className="text-xs font-bold text-emerald-700 flex items-center gap-1.5 tabular-nums">
+                                          <Check className="w-3.5 h-3.5" />
+                                          Wzięte {dose.takenAt ? `o ${dose.takenAt}` : ''}
+                                        </span>
+                                      ) : (
+                                        <span className="text-xs font-semibold text-slate-500">
+                                          Pominięte
+                                        </span>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => onUndoDose(dose.id)}
+                                        className="min-h-[32px] px-3 py-1 rounded-lg bg-slate-100 hover:bg-teal-50 text-teal-800 text-xs font-bold flex items-center gap-1.5 transition-colors"
+                                      >
+                                        <Undo2 className="w-3.5 h-3.5" />
+                                        <span>Cofnij</span>
                                       </button>
                                     </div>
                                   )}
@@ -879,12 +1160,19 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
             {activeTab === 'calendar' && (
               <CalendarView
                 currentDate={todayStr}
-                allDoses={doses}
+                selectedDate={selectedDayStr}
                 therapies={therapies}
+                medications={medications}
+                storedDoses={visibleStoredDoses}
+                profiles={profiles}
+                activeProfileId={activeProfileId}
                 onSelectDate={(d) => setSelectedDayStr(d)}
-                onTakeDose={(id) => {
-                  const found = doses.find((d) => d.id === id);
-                  if (found) handleTakeDoseWithFeedback(found);
+                onTakeDose={(dose) => handleTakeDoseWithFeedback(dose)}
+                onSkipDose={(dose) => onSkipDose(dose.id, dose)}
+                onUndoDose={onUndoDose}
+                onEditDoseNote={(dose) => {
+                  setNoteDoseTarget(dose);
+                  setNoteDraft(dose.note || '');
                 }}
               />
             )}
@@ -899,6 +1187,7 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                 activeProfileId={activeProfileId}
                 onRefillMedication={onRefillMedication}
                 onUpdateStockAndExpiry={onUpdateStockAndExpiry}
+                onOpenPdfReport={() => setIsPdfReportOpen(true)}
                 compact
               />
             )}
@@ -906,97 +1195,51 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
             {/* TAB 4: TERAPIE I LEKI */}
             {activeTab === 'therapies' && (
               <div className="space-y-3.5">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-extrabold text-slate-900 text-sm">Aktywne Terapie</h3>
-                  <button
-                    type="button"
-                    onClick={() => setIsAddTherapyOpen(true)}
-                    className="text-xs text-teal-700 hover:text-teal-800 font-bold flex items-center gap-1"
-                  >
-                    <Plus className="w-3.5 h-3.5" /> Nowa terapia
-                  </button>
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="font-extrabold text-slate-900 text-sm">Aktywne terapie</h3>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setIsPdfReportOpen(true)}
+                      className="px-2.5 py-1.5 rounded-xl bg-teal-50 hover:bg-teal-100 text-teal-800 text-[11px] font-bold flex items-center gap-1 transition-colors whitespace-nowrap"
+                      title="Generuj kartę przebiegu terapii PDF dla lekarza"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Raport PDF</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingTherapyTarget(null);
+                        setIsAddTherapyOpen(true);
+                      }}
+                      className="text-xs text-teal-700 hover:text-teal-800 font-bold flex items-center gap-1 whitespace-nowrap"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Nowa terapia
+                    </button>
+                  </div>
                 </div>
 
-                {therapies
-                  .filter((t) => activeProfileId === 'all' || (t.profileId || 'self') === activeProfileId)
-                  .map((therapy) => {
-                    const therapyMeds = medications.filter((m) => m.therapyId === therapy.id);
-                    const profile = profiles.find((p) => p.id === (therapy.profileId || 'self'));
+                {activeTherapies.length === 0 ? (
+                  <div className="bg-white rounded-2xl border border-slate-200/80 p-5 text-center space-y-1">
+                    <p className="text-xs font-bold text-slate-700">Brak aktywnych terapii</p>
+                    <p className="text-[11px] text-slate-400">
+                      Utwórz nową terapię lub wznów wstrzymaną poniżej.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">{activeTherapies.map(renderTherapyCard)}</div>
+                )}
 
-                    return (
-                      <div
-                        key={therapy.id}
-                        className="bg-white rounded-2xl border border-slate-200/80 p-4 shadow-2xs space-y-3"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex items-start gap-2.5">
-                            <span
-                              className="w-3.5 h-3.5 rounded-full shrink-0 mt-1"
-                              style={{ backgroundColor: therapy.color }}
-                            />
-                            <div>
-                              <h4 className="font-bold text-slate-900 text-sm leading-tight">
-                                {therapy.name}
-                              </h4>
-                              <p className="text-[11px] text-slate-500 mt-0.5">
-                                {profile?.name || 'Mój profil'} ·{' '}
-                                {therapy.description || 'Terapia aktywna'}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="bg-slate-50 rounded-xl p-2.5 space-y-2">
-                          <div className="text-[11px] font-bold text-slate-500 flex items-center justify-between px-1">
-                            <span>Leki w terapii ({therapyMeds.length})</span>
-                            <button
-                              type="button"
-                              onClick={() => setIsAddMedOpen(true)}
-                              className="text-teal-700 hover:underline font-bold"
-                            >
-                              + Dodaj lek
-                            </button>
-                          </div>
-
-                          {therapyMeds.length === 0 ? (
-                            <p className="text-xs text-slate-400 italic px-1">Brak przypisanych leków.</p>
-                          ) : (
-                            therapyMeds.map((m) => (
-                              <div
-                                key={m.id}
-                                className="bg-white p-2.5 rounded-xl border border-slate-200/80 flex items-center justify-between text-xs"
-                              >
-                                <div className="flex-1 min-w-0 pr-2">
-                                  <div className="font-bold text-slate-900 truncate">{m.name}</div>
-                                  <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
-                                    {formatDoseDisplay(m.doseAmount, m.type)} · {m.times.join(', ')}
-                                    {typeof m.stockQuantity === 'number' &&
-                                      ` · Zapas: ${m.stockQuantity}`}
-                                  </div>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    if (
-                                      window.confirm(
-                                        `Czy na pewno chcesz usunąć lek "${m.name}" z terapii "${therapy.name}"?`
-                                      )
-                                    ) {
-                                      onDeleteMedication?.(m.id);
-                                    }
-                                  }}
-                                  className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
-                                  title="Usuń lek z terapii"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
+                {pausedTherapies.length > 0 && (
+                  <div className="pt-2 space-y-2.5">
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold text-slate-500 px-1">
+                      <Archive className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Zarchiwizowane / Wstrzymane ({pausedTherapies.length})</span>
+                    </div>
+                    <div className="space-y-3">{pausedTherapies.map(renderTherapyCard)}</div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1007,6 +1250,7 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                 medications={medications}
                 doses={doses}
                 profiles={profiles}
+                medicationChanges={medicationChanges}
                 onImportBackupData={onImportBackupData}
                 onRestoreSampleBackup={onResetSampleData}
               />
@@ -1028,7 +1272,7 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                 <button
                   key={tab.id}
                   type="button"
-                  onClick={() => setActiveTab(tab.id as any)}
+                  onClick={() => setActiveTab(tab.id as 'today' | 'calendar' | 'cabinet' | 'therapies' | 'sync')}
                   className={`relative min-h-[46px] flex flex-col items-center justify-center gap-0.5 rounded-xl transition-colors ${
                     isActive ? 'text-teal-700 font-bold' : 'text-slate-400 hover:text-slate-700'
                   }`}
@@ -1083,23 +1327,40 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
         }}
       />
 
-      {/* Add Therapy Modal */}
+      {/* Add / Edit Therapy Modal */}
       <AddTherapyModal
         isOpen={isAddTherapyOpen}
         profiles={profiles}
         defaultProfileId={activeProfileId}
-        onClose={() => setIsAddTherapyOpen(false)}
+        therapyToEdit={editingTherapyTarget}
+        onClose={() => {
+          setIsAddTherapyOpen(false);
+          setEditingTherapyTarget(null);
+        }}
         onSave={onAddTherapy}
+        onUpdate={onUpdateTherapy}
+        onCreateProfile={onCreateProfile}
       />
 
-      {/* Add Medication Modal */}
+      {/* Add / Edit Medication Modal */}
       <AddMedicationModal
         isOpen={isAddMedOpen}
         therapies={therapies}
-        onClose={() => setIsAddMedOpen(false)}
+        profiles={profiles}
+        initialTherapyId={preselectedTherapyIdForMed}
+        medicationToEdit={editingMedicationTarget}
+        onClose={() => {
+          setIsAddMedOpen(false);
+          setPreselectedTherapyIdForMed(null);
+          setEditingMedicationTarget(null);
+        }}
         onSave={onAddMedication}
+        onUpdate={onUpdateMedication}
         onOpenAddTherapy={() => {
           setIsAddMedOpen(false);
+          setPreselectedTherapyIdForMed(null);
+          setEditingMedicationTarget(null);
+          setEditingTherapyTarget(null);
           setIsAddTherapyOpen(true);
         }}
       />
@@ -1108,12 +1369,148 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
       <DrugDatabaseOverlay
         isOpen={isDrugDatabaseOpen}
         therapies={therapies}
+        profiles={profiles}
+        initialTherapyId={preselectedTherapyIdForMed}
         onClose={() => setIsDrugDatabaseOpen(false)}
         onAddMedicationToTherapy={onAddMedication}
         onOpenAddTherapy={() => {
           setIsDrugDatabaseOpen(false);
+          setEditingTherapyTarget(null);
           setIsAddTherapyOpen(true);
         }}
+      />
+
+      {/* Dose Note Quick-Edit Modal */}
+      {noteDoseTarget && (
+        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div
+            className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl border border-slate-200 space-y-3"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dose-note-title"
+          >
+            <div className="flex items-center justify-between">
+              <h3 id="dose-note-title" className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                <StickyNote className="w-4 h-4 text-amber-600" />
+                <span>Notatka: {noteDoseTarget.medicationName}</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setNoteDoseTarget(null)}
+                className="p-1 text-slate-400 hover:text-slate-700 rounded-lg"
+                aria-label="Zamknij okno notatki"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <textarea
+              rows={3}
+              value={noteDraft}
+              onChange={(e) => setNoteDraft(e.target.value)}
+              placeholder="np. Ciśnienie 125/80, po śniadaniu, bez dolegliwości..."
+              autoFocus
+              className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-teal-600"
+            />
+            <div className="flex items-center justify-between gap-2 pt-1">
+              {noteDoseTarget.note ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onUpdateDoseNote?.(noteDoseTarget.id, undefined, noteDoseTarget);
+                    setNoteDoseTarget(null);
+                  }}
+                  className="px-3 py-1.5 rounded-xl text-xs font-bold text-rose-600 hover:bg-rose-50"
+                >
+                  Usuń notatkę
+                </button>
+              ) : (
+                <span />
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setNoteDoseTarget(null)}
+                  className="px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
+                >
+                  Anuluj
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const cleaned = noteDraft.trim() || undefined;
+                    onUpdateDoseNote?.(noteDoseTarget.id, cleaned, noteDoseTarget);
+                    setNoteDoseTarget(null);
+                  }}
+                  className="px-4 py-1.5 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold"
+                >
+                  Zapisz notatkę
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Profile Manager Modal (from simulator strip) */}
+      <ProfileManagerModal
+        isOpen={isProfileManagerOpen}
+        profiles={profiles}
+        therapies={therapies}
+        medications={medications}
+        onClose={() => setIsProfileManagerOpen(false)}
+        onCreateProfile={onCreateProfile}
+        onUpdateProfile={onUpdateProfile}
+        onDeleteProfile={onDeleteProfile}
+      />
+
+      {/* Confirm Delete Medication Modal */}
+      <ConfirmDialogModal
+        isOpen={confirmDeleteMedTarget !== null}
+        title="Usunąć lek z terapii?"
+        message={
+          confirmDeleteMedTarget
+            ? `Czy na pewno chcesz usunąć lek "${confirmDeleteMedTarget.med.name}" z terapii "${confirmDeleteMedTarget.therapyName}"?`
+            : ''
+        }
+        confirmLabel="Usuń lek"
+        onCancel={() => setConfirmDeleteMedTarget(null)}
+        onConfirm={() => {
+          if (confirmDeleteMedTarget) {
+            onDeleteMedication?.(confirmDeleteMedTarget.med.id);
+          }
+          setConfirmDeleteMedTarget(null);
+        }}
+      />
+
+      {/* Confirm Delete Therapy Modal */}
+      <ConfirmDialogModal
+        isOpen={confirmDeleteTherapyTarget !== null}
+        title="Usunąć terapię?"
+        message={
+          confirmDeleteTherapyTarget
+            ? `Czy na pewno chcesz usunąć terapię "${confirmDeleteTherapyTarget.name}" wraz z przypisanymi lekami i historią dawek?`
+            : ''
+        }
+        confirmLabel="Usuń terapię"
+        onCancel={() => setConfirmDeleteTherapyTarget(null)}
+        onConfirm={() => {
+          if (confirmDeleteTherapyTarget) {
+            onDeleteTherapy(confirmDeleteTherapyTarget.id);
+          }
+          setConfirmDeleteTherapyTarget(null);
+        }}
+      />
+
+      {/* PDF Therapy Report Configurator & Preview Modal */}
+      <TherapyPdfReportModal
+        isOpen={isPdfReportOpen}
+        onClose={() => setIsPdfReportOpen(false)}
+        profiles={profiles}
+        therapies={therapies}
+        medications={medications}
+        doses={doses}
+        medicationChanges={medicationChanges}
+        activeProfileId={activeProfileId}
       />
 
       {/* Background Notification Diagnosis & Settings Modal */}

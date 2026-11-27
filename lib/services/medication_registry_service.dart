@@ -1,3 +1,5 @@
+import '../models/medication.dart';
+
 class RegisteredMedicine {
   final String id;
   final String name;
@@ -22,6 +24,8 @@ class RegisteredMedicine {
     required this.instructions,
     this.isCustom = false,
   });
+
+  MedicationType get medicationType => MedicationType.fromString(defaultType);
 
   Map<String, dynamic> toMap() {
     return {
@@ -54,12 +58,11 @@ class RegisteredMedicine {
   }
 }
 
-
 class MedicationRegistryService {
   static final MedicationRegistryService instance = MedicationRegistryService._internal();
   MedicationRegistryService._internal();
 
-  // Baza leków oparta na oficjalnych rejestrach URPL / NFZ
+  // Baza leków oparta na oficjalnych rejestrach URPL / NFZ z pełnym podziałem na kategorie spójnym z wersją Web
   static final List<RegisteredMedicine> _registry = _buildInitialRegistry();
 
   static List<RegisteredMedicine> _buildInitialRegistry() {
@@ -82,17 +85,24 @@ class MedicationRegistryService {
       {'name': 'Macromax', 'sub': 'Azithromycinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['500 mg'], 'q': '1', 'inst': 'Raz na dobę o stałej porze'},
       {'name': 'Biseptol', 'sub': 'Sulfamethoxazolum + Trimethoprimum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['480 mg', '960 mg'], 'q': '1', 'inst': 'Po posiłku z dużą ilością płynu'},
       {'name': 'Cipronex', 'sub': 'Ciprofloxacinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['250 mg', '500 mg'], 'q': '1', 'inst': 'Niezależnie od posiłków, nie z nabiałem'},
-      {'name': 'Monural', 'sub': 'Fosfomycinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['3 g saszetka'], 'q': '1', 'inst': 'Wieczorem przed snem, po opróżnieniu pęcherza'},
+      {'name': 'Monural', 'sub': 'Fosfomycinum', 'cat': 'Antybiotyki', 'type': 'other', 'doses': ['3 g saszetka'], 'q': '1', 'inst': 'Wieczorem przed snem, po opróżnieniu pęcherza'},
       {'name': 'Xifaxan', 'sub': 'Rifaximinum', 'cat': 'Antybiotyki', 'type': 'capsule', 'doses': ['200 mg'], 'q': '1', 'inst': 'Doustnie, popić szklanką wody'},
 
-      // Leki przeciwgrzybicze i przeciwwirusowe
+      // Urologia
+      {'name': 'Urofuraginum', 'sub': 'Furazidinum', 'cat': 'Urologia', 'type': 'capsule', 'doses': ['50 mg', 'Max 100 mg'], 'q': '1', 'inst': 'Podczas posiłków bogatych w białko, popić wodą'},
+      {'name': 'Furagina TEVA', 'sub': 'Furazidinum', 'cat': 'Urologia', 'type': 'capsule', 'doses': ['50 mg'], 'q': '2', 'inst': 'W trakcie posiłku, pić dużo płynów'},
+      {'name': 'Omnic Ocas', 'sub': 'Tamsulosinum', 'cat': 'Urologia', 'type': 'capsule', 'doses': ['0.4 mg'], 'q': '1', 'inst': 'Raz na dobę po śniadaniu, nie rozgryzać'},
+      {'name': 'Vesicare', 'sub': 'Solifenacinum', 'cat': 'Urologia', 'type': 'capsule', 'doses': ['5 mg', '10 mg'], 'q': '1', 'inst': 'Raz dziennie o stałej porze'},
+
+      // Przeciwgrzybicze i Przeciwwirusowe
       {'name': 'Flucofast', 'sub': 'Fluconazolum', 'cat': 'Przeciwgrzybicze', 'type': 'capsule', 'doses': ['50 mg', '100 mg', '150 mg', '200 mg'], 'q': '1', 'inst': 'Niezależnie od posiłków, popić dużą ilością wody'},
       {'name': 'Diflucan', 'sub': 'Fluconazolum', 'cat': 'Przeciwgrzybicze', 'type': 'capsule', 'doses': ['50 mg', '150 mg'], 'q': '1', 'inst': 'Raz dziennie lub jednorazowo wg zaleceń'},
       {'name': 'Trioxal', 'sub': 'Itraconazolum', 'cat': 'Przeciwgrzybicze', 'type': 'capsule', 'doses': ['100 mg'], 'q': '1', 'inst': 'Bezpośrednio po głównym posiłku'},
       {'name': 'Heviran', 'sub': 'Aciclovirum', 'cat': 'Przeciwwirusowe', 'type': 'capsule', 'doses': ['200 mg', '400 mg', '800 mg'], 'q': '1', 'inst': 'W trakcie posiłku, dbać o nawodnienie'},
       {'name': 'Hascovir', 'sub': 'Aciclovirum', 'cat': 'Przeciwwirusowe', 'type': 'capsule', 'doses': ['200 mg', '400 mg'], 'q': '1', 'inst': 'Co 4 godziny w ciągu dnia'},
+      {'name': 'Groprinosin', 'sub': 'Inosinum pranobexum', 'cat': 'Przeciwwirusowe', 'type': 'capsule', 'doses': ['500 mg', 'Forte 1000 mg'], 'q': '1', 'inst': 'Po posiłku, popić szklanką wody'},
 
-      // Glikokortykosteroidy
+      // Kortykosteroidy
       {'name': 'Metypred', 'sub': 'Methylprednisolonum', 'cat': 'Kortykosteroidy', 'type': 'capsule', 'doses': ['4 mg', '8 mg', '16 mg'], 'q': '1', 'inst': 'Rano po śniadaniu, z osłoną żołądka'},
       {'name': 'Encorton', 'sub': 'Prednisonum', 'cat': 'Kortykosteroidy', 'type': 'capsule', 'doses': ['1 mg', '5 mg', '10 mg', '20 mg'], 'q': '1', 'inst': 'Rano w trakcie posiłku, nie na czczo'},
 
@@ -106,7 +116,7 @@ class MedicationRegistryService {
       {'name': 'Dexak', 'sub': 'Dexketoprofenum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['25 mg', '25 mg SL saszetki'], 'q': '1', 'inst': '30 min przed posiłkiem'},
       {'name': 'Diclac', 'sub': 'Diclofenacum natricum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['50 mg', '75 mg Duo', '150 mg Duo'], 'q': '1', 'inst': 'W trakcie lub po posiłku, nie dzielić'},
       {'name': 'Voltaren Acti Forte', 'sub': 'Diclofenacum kalicum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['25 mg'], 'q': '1', 'inst': 'Przed posiłkiem z wodą'},
-      {'name': 'Nimesil', 'sub': 'Nimesulidum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['100 mg saszetki'], 'q': '1', 'inst': 'Po posiłku, rozpuścić w wodzie'},
+      {'name': 'Nimesil', 'sub': 'Nimesulidum', 'cat': 'Przeciwbólowe', 'type': 'other', 'doses': ['100 mg saszetki'], 'q': '1', 'inst': 'Po posiłku, rozpuścić w wodzie'},
       {'name': 'Pyralgina', 'sub': 'Metamizolum natricum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['500 mg'], 'q': '1', 'inst': 'W trakcie lub po posiłku'},
       {'name': 'Doreta', 'sub': 'Tramadoli hydrochloridum + Paracetamolum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['37.5 mg + 325 mg', '75 mg + 650 mg'], 'q': '1', 'inst': 'Ściśle wg wskazań lekarza'},
       {'name': 'Skudexa', 'sub': 'Tramadoli hydrochloridum + Dexketoprofenum', 'cat': 'Przeciwbólowe', 'type': 'capsule', 'doses': ['75 mg + 25 mg'], 'q': '1', 'inst': 'Popić dużą ilością płynu'},
@@ -130,7 +140,7 @@ class MedicationRegistryService {
       {'name': 'Eliquis', 'sub': 'Apixabanum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['2.5 mg', '5 mg'], 'q': '1', 'inst': 'Rano i wieczorem co 12h'},
       {'name': 'Xarelto', 'sub': 'Rivaroxabanum', 'cat': 'Kardiologia', 'type': 'capsule', 'doses': ['15 mg', '20 mg'], 'q': '1', 'inst': 'W trakcie głównego posiłku'},
 
-      // Cukrzyca i Gastrologia
+      // Cukrzyca, Gastrologia i Probiotyki
       {'name': 'Glucophage', 'sub': 'Metformini hydrochloridum', 'cat': 'Cukrzyca', 'type': 'capsule', 'doses': ['500 mg', '850 mg', '1000 mg', 'XR 500 mg', 'XR 750 mg', 'XR 1000 mg'], 'q': '1', 'inst': 'W trakcie lub po posiłku'},
       {'name': 'Metformax', 'sub': 'Metformini hydrochloridum', 'cat': 'Cukrzyca', 'type': 'capsule', 'doses': ['500 mg', '850 mg', '1000 mg', 'SR 500 mg', 'SR 1000 mg'], 'q': '1', 'inst': 'Wieczorem podczas kolacji'},
       {'name': 'Jardiance', 'sub': 'Empagliflozinum', 'cat': 'Cukrzyca', 'type': 'capsule', 'doses': ['10 mg', '25 mg'], 'q': '1', 'inst': 'Rano z posiłkiem lub bez'},
@@ -140,19 +150,25 @@ class MedicationRegistryService {
       {'name': 'Mesopral', 'sub': 'Esomeprazolum', 'cat': 'Gastrologia', 'type': 'capsule', 'doses': ['20 mg', '40 mg'], 'q': '1', 'inst': 'Rano przed śniadaniem'},
       {'name': 'No-Spa', 'sub': 'Drotaverini hydrochloridum', 'cat': 'Gastrologia', 'type': 'capsule', 'doses': ['40 mg', '80 mg Forte', '80 mg Max'], 'q': '1', 'inst': 'Doraźnie w skurczach'},
       {'name': 'Duspatalin Retard', 'sub': 'Mebeverini hydrochloridum', 'cat': 'Gastrologia', 'type': 'capsule', 'doses': ['200 mg'], 'q': '1', 'inst': '20 min przed posiłkiem'},
+      {'name': 'Enterol', 'sub': 'Saccharomyces boulardii', 'cat': 'Probiotyki', 'type': 'capsule', 'doses': ['250 mg'], 'q': '1', 'inst': 'Osłonowo przy antybiotyku, popić chłodną wodą'},
+      {'name': 'Sanprobi Super Formula', 'sub': 'Bakterie probiotyczne', 'cat': 'Probiotyki', 'type': 'capsule', 'doses': ['kapsułki'], 'q': '1', 'inst': 'W trakcie posiłku, 2h odstępu od antybiotyku'},
+      {'name': 'Multilac', 'sub': 'Synbiotyk 9 szczepów', 'cat': 'Probiotyki', 'type': 'capsule', 'doses': ['kapsułki'], 'q': '1', 'inst': 'Raz na dobę przed snem'},
 
-      // Układ oddechowy i Alergia
+      // Układ oddechowy, Laryngologia i Alergia
       {'name': 'Ventolin', 'sub': 'Salbutamolum', 'cat': 'Pulmonologia', 'type': 'inhaler', 'doses': ['100 µg aerozol'], 'q': '1', 'inst': 'Wziewnie w duszności, wstrząsnąć'},
       {'name': 'Berodual', 'sub': 'Fenoterolum + Ipratropium', 'cat': 'Pulmonologia', 'type': 'drops', 'doses': ['krople do nebulizacji'], 'q': '20', 'inst': 'Do nebulizacji z solą fizjologiczną'},
       {'name': 'Pulmicort', 'sub': 'Budesonidum', 'cat': 'Pulmonologia', 'type': 'ml', 'doses': ['0.25 mg/ml', '0.5 mg/ml'], 'q': '2', 'inst': 'W nebulizacji, wypłukać usta wodą'},
       {'name': 'Foster', 'sub': 'Beclometasoni dipropionas + Formoterolum', 'cat': 'Pulmonologia', 'type': 'inhaler', 'doses': ['100/6 µg', '200/6 µg'], 'q': '1', 'inst': 'Rano i wieczorem, wypłukać usta'},
       {'name': 'Symbicort Turbuhaler', 'sub': 'Budesonidum + Formoterolum', 'cat': 'Pulmonologia', 'type': 'inhaler', 'doses': ['80/4.5 µg', '160/4.5 µg', '320/9 µg'], 'q': '1', 'inst': 'Wziewnie rano i wieczorem'},
+      {'name': 'Pronasal', 'sub': 'Mometasoni furoas', 'cat': 'Laryngologia', 'type': 'application', 'doses': ['aerozol do nosa'], 'q': '2', 'inst': 'Po 1-2 dawki do każdego otworu nosowego rano'},
+      {'name': 'Dymista', 'sub': 'Azelastinum + Fluticasonum', 'cat': 'Laryngologia', 'type': 'application', 'doses': ['aerozol do nosa'], 'q': '1', 'inst': 'Rano i wieczorem po 1 dawce do każdego nozdrza'},
+      {'name': 'Otrivin', 'sub': 'Xylometazolini hydrochloridum', 'cat': 'Laryngologia', 'type': 'application', 'doses': ['0.1% aerozol'], 'q': '1', 'inst': 'Stosować maksymalnie przez 5-7 dni'},
       {'name': 'Clatra', 'sub': 'Bilastinum', 'cat': 'Alergia', 'type': 'capsule', 'doses': ['20 mg'], 'q': '1', 'inst': 'Ściśle na czczo: 1h przed lub 2h po jedzeniu'},
       {'name': 'Xyzal', 'sub': 'Levocetirizinum', 'cat': 'Alergia', 'type': 'capsule', 'doses': ['5 mg'], 'q': '1', 'inst': 'Raz na dobę wieczorem'},
       {'name': 'Zyrtec', 'sub': 'Cetirizinum', 'cat': 'Alergia', 'type': 'capsule', 'doses': ['10 mg'], 'q': '1', 'inst': 'Wieczorem, popić wodą'},
       {'name': 'Hitaxa', 'sub': 'Desloratadinum', 'cat': 'Alergia', 'type': 'capsule', 'doses': ['5 mg'], 'q': '1', 'inst': 'Rozpuścić na języku'},
 
-      // Okulistyka, Tarczyca, Neurologia
+      // Okulistyka, Tarczyca, Neurologia, Psychiatria, Sen, Metabolizm, Minerały, Witaminy
       {'name': 'Hyabak', 'sub': 'Natrii hyaluronas 0.15%', 'cat': 'Okulistyka', 'type': 'drops', 'doses': ['krople do oczu'], 'q': '1', 'inst': 'Zakroplić do worka spojówkowego'},
       {'name': 'Systane Ultra', 'sub': 'Krople nawilżające', 'cat': 'Okulistyka', 'type': 'drops', 'doses': ['krople do oczu'], 'q': '1', 'inst': '1-2 krople do każdego oka'},
       {'name': 'Thealoz Duo', 'sub': 'Trehalosum + Natrii hyaluronas', 'cat': 'Okulistyka', 'type': 'drops', 'doses': ['krople bez konserwantów'], 'q': '1', 'inst': '1 kropla 4-6 razy dziennie'},
@@ -161,6 +177,8 @@ class MedicationRegistryService {
       {'name': 'Letrox', 'sub': 'Levothyroxinum natricum', 'cat': 'Endokrynologia', 'type': 'capsule', 'doses': ['50 µg', '75 µg', '100 µg', '125 µg', '150 µg'], 'q': '1', 'inst': 'Rano na czczo z małą ilością wody'},
       {'name': 'Pregabalin', 'sub': 'Pregabalinum', 'cat': 'Neurologia', 'type': 'capsule', 'doses': ['75 mg', '150 mg', '300 mg'], 'q': '1', 'inst': 'Rano i wieczorem o stałych porach'},
       {'name': 'Trittico CR', 'sub': 'Trazodoni hydrochloridum', 'cat': 'Psychiatria', 'type': 'capsule', 'doses': ['75 mg', '150 mg'], 'q': '1', 'inst': 'Wieczorem przed snem'},
+      {'name': 'Melatonina LEK-AM', 'sub': 'Melatoninum', 'cat': 'Sen', 'type': 'capsule', 'doses': ['1 mg', '3 mg', '5 mg'], 'q': '1', 'inst': '30-60 minut przed snem'},
+      {'name': 'Nasen', 'sub': 'Zolpidemi tartras', 'cat': 'Sen', 'type': 'capsule', 'doses': ['10 mg'], 'q': '1', 'inst': 'Bezpośrednio przed położeniem się spać'},
       {'name': 'Milurit', 'sub': 'Allopurinolum', 'cat': 'Metabolizm', 'type': 'capsule', 'doses': ['100 mg', '200 mg', '300 mg'], 'q': '1', 'inst': 'Po posiłku, pić dużo płynów'},
       {'name': 'Magne B6 Forte', 'sub': 'Magnesium + B6', 'cat': 'Minerały', 'type': 'capsule', 'doses': ['100 mg Mg2+'], 'q': '1', 'inst': 'W trakcie posiłku, popić wodą'},
       {'name': 'Vigantoletten', 'sub': 'Cholecalciferolum (D3)', 'cat': 'Witaminy', 'type': 'capsule', 'doses': ['1000 j.m.', '2000 j.m.'], 'q': '1', 'inst': 'Podczas posiłku z tłuszczami'},
@@ -168,14 +186,17 @@ class MedicationRegistryService {
 
     for (final t in templates) {
       final doses = t['doses'] as List<String>;
+      final typeStr = t['type'] as String;
+      final medType = MedicationType.fromString(typeStr);
       for (final d in doses) {
         list.add(RegisteredMedicine(
           id: 'med_${id++}',
           name: '${t['name']} $d',
           substance: t['sub'] as String,
           category: t['cat'] as String,
-          defaultType: t['type'] as String,
+          defaultType: typeStr,
           defaultDose: t['q'] as String,
+          dosageUnit: medType.displayName,
           instructions: t['inst'] as String,
         ));
       }
@@ -198,47 +219,65 @@ class MedicationRegistryService {
         .trim();
   }
 
-  List<RegisteredMedicine> search(String query, {List<RegisteredMedicine> customMedicines = const [], int limit = 20}) {
+  List<String> getAllCategories() {
+    final cats = _registry.map((m) => m.category).toSet().toList();
+    cats.sort((a, b) => a.compareTo(b));
+    return ['Wszystkie', ...cats];
+  }
+
+  List<RegisteredMedicine> search(
+    String query, {
+    String category = 'Wszystkie',
+    List<RegisteredMedicine> customMedicines = const [],
+    int limit = 25,
+  }) {
     final q = _normalize(query);
-    if (q.isEmpty) return [];
+    final catNorm = _normalize(category);
+    final filterByCategory = category.isNotEmpty && category != 'Wszystkie';
+
+    if (q.isEmpty && !filterByCategory) return [];
 
     final List<RegisteredMedicine> results = [];
     final all = [...customMedicines, ..._registry];
 
     for (final m in all) {
+      if (filterByCategory && !_normalize(m.category).contains(catNorm)) {
+        continue;
+      }
+      if (q.isEmpty) {
+        results.add(m);
+        if (results.length >= limit) break;
+        continue;
+      }
+
       final nameNorm = _normalize(m.name);
       final subNorm = _normalize(m.substance);
-      final catNorm = _normalize(m.category);
+      final mCatNorm = _normalize(m.category);
 
-      if (nameNorm.contains(q) || subNorm.contains(q) || catNorm.contains(q)) {
+      if (nameNorm.contains(q) || subNorm.contains(q) || mCatNorm.contains(q)) {
         results.add(m);
         if (results.length >= limit) break;
       }
     }
 
     results.sort((a, b) {
-      final aStarts = _normalize(a.name).startsWith(q);
-      final bStarts = _normalize(b.name).startsWith(q);
-      if (aStarts && !bStarts) return -1;
-      if (!aStarts && bStarts) return 1;
+      if (q.isNotEmpty) {
+        final aStarts = _normalize(a.name).startsWith(q);
+        final bStarts = _normalize(b.name).startsWith(q);
+        if (aStarts && !bStarts) return -1;
+        if (!aStarts && bStarts) return 1;
+      }
       return a.name.compareTo(b.name);
     });
 
     return results;
   }
 
-  static const List<String> standardDosageUnits = [
-    'tabl. powlekana',
-    'kapsułka',
-    'krople',
-    'ml (syrop)',
-    'dawka wziewna',
-    'saszetka',
-    'aplikacja (maść/krem)',
-    'ampułka / zastrzyk',
-    'czopek',
-    'plaster',
-  ];
+  /// Ujednolicona z MedicationType (Web i Flutter) lista jednostek dawkowania
+  static const List<MedicationType> unifiedDosageTypes = MedicationType.values;
+
+  static List<String> get standardDosageUnits =>
+      MedicationType.values.map((t) => '${t.displayName} (${t.shortUnit})').toList();
 
   static const List<Map<String, dynamic>> standardFrequencies = [
     {'id': '1x_rano', 'label': '1x na dobę (rano)', 'times': ['08:00']},
@@ -251,4 +290,3 @@ class MedicationRegistryService {
     {'id': 'doraznie', 'label': 'Doraźnie w razie bólu / objawów', 'times': ['08:00', '16:00']},
   ];
 }
-

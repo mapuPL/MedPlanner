@@ -18,10 +18,12 @@ class _AddTherapyScreenState extends State<AddTherapyScreen> {
   final _formKey = GlobalKey<FormState>();
   late TextEditingController _nameController;
   late TextEditingController _descController;
-  DateTime _startDate = DateTime.now();
+  DateTime? _startDate;
   DateTime? _endDate;
+  bool _isActive = true;
   String _selectedColor = '#10B981';
   String _selectedProfile = 'Mój profil';
+  String? _dateError;
 
   List<UserProfile> _profiles = [];
 
@@ -42,6 +44,7 @@ class _AddTherapyScreenState extends State<AddTherapyScreen> {
     if (widget.therapyToEdit != null) {
       _startDate = widget.therapyToEdit!.startDate;
       _endDate = widget.therapyToEdit!.endDate;
+      _isActive = widget.therapyToEdit!.isActive;
       _selectedColor = widget.therapyToEdit!.colorHex;
       _selectedProfile = widget.therapyToEdit!.profileName;
     } else if (DatabaseService.instance.selectedProfileNotifier.value != null) {
@@ -71,30 +74,79 @@ class _AddTherapyScreenState extends State<AddTherapyScreen> {
     super.dispose();
   }
 
+  String? _validateDates() {
+    if (_startDate != null && _endDate != null) {
+      final start = DateTime(_startDate!.year, _startDate!.month, _startDate!.day);
+      final end = DateTime(_endDate!.year, _endDate!.month, _endDate!.day);
+      if (end.isBefore(start)) {
+        return 'Data zakończenia nie może być wcześniejsza niż data rozpoczęcia.';
+      }
+    }
+    return null;
+  }
+
+  Future<void> _pickStartDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _startDate ?? DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2035),
+    );
+    if (picked != null) {
+      setState(() {
+        _startDate = DateTime(picked.year, picked.month, picked.day);
+        _dateError = _validateDates();
+      });
+    }
+  }
+
+  Future<void> _pickEndDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _endDate ?? (_startDate ?? DateTime.now()).add(const Duration(days: 7)),
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2035),
+    );
+    if (picked != null) {
+      setState(() {
+        _endDate = DateTime(picked.year, picked.month, picked.day);
+        _dateError = _validateDates();
+      });
+    }
+  }
+
   Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
+    final formValid = _formKey.currentState!.validate();
+    final dateErr = _validateDates();
+    setState(() => _dateError = dateErr);
+    if (!formValid || dateErr != null) return;
 
     final therapy = Therapy(
       id: widget.therapyToEdit?.id ?? const Uuid().v4(),
       name: _nameController.text.trim(),
       description: _descController.text.trim().isNotEmpty ? _descController.text.trim() : null,
       colorHex: _selectedColor,
-      iconName: 'medical_services',
+      iconName: widget.therapyToEdit?.iconName ?? 'medical_services',
       profileName: _selectedProfile,
       startDate: _startDate,
       endDate: _endDate,
-      isActive: true,
+      isActive: _isActive,
       createdAt: widget.therapyToEdit?.createdAt ?? DateTime.now(),
     );
 
-    await DatabaseService.instance.insertTherapy(therapy);
+    if (widget.therapyToEdit != null) {
+      await DatabaseService.instance.updateTherapy(therapy);
+    } else {
+      await DatabaseService.instance.insertTherapy(therapy);
+    }
+
     if (mounted) {
       if (Navigator.canPop(context)) {
         Navigator.pop(context, true);
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('✓ Zapisano terapię: ${therapy.name}'),
+            content: Text('Zapisano terapię: ${therapy.name}'),
             backgroundColor: Colors.teal.shade700,
           ),
         );
@@ -119,6 +171,7 @@ class _AddTherapyScreenState extends State<AddTherapyScreen> {
           padding: const EdgeInsets.all(20),
           children: [
             Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Expanded(
                   child: DropdownButtonFormField<String>(
@@ -153,16 +206,17 @@ class _AddTherapyScreenState extends State<AddTherapyScreen> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                IconButton.filledTonal(
-                  icon: const Icon(Icons.person_add_alt_1),
-                  tooltip: 'Dodaj lub edytuj użytkownika',
+                FilledButton.tonalIcon(
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                  ),
+                  icon: const Icon(Icons.person_add_alt_1, size: 18),
+                  label: const Text('+ Nowy profil', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                   onPressed: () async {
-                    String? createdName;
-                    await ProfileManagerSheet.show(
-                      context,
-                      onProfileCreated: (name) => createdName = name,
-                    );
-                    await _loadProfiles(selectName: createdName);
+                    final created = await QuickAddProfileDialog.show(context);
+                    if (created != null) {
+                      await _loadProfiles(selectName: created.name);
+                    }
                   },
                 ),
               ],
@@ -189,6 +243,137 @@ class _AddTherapyScreenState extends State<AddTherapyScreen> {
               ),
               maxLines: 2,
             ),
+            const SizedBox(height: 18),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: _isActive ? Colors.teal.shade50 : Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: _isActive ? Colors.teal.shade200 : Colors.grey.shade300,
+                ),
+              ),
+              child: SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _isActive,
+                activeColor: const Color(0xFF0F766E),
+                title: Text(
+                  _isActive ? 'Status: Terapia aktywna' : 'Status: Wstrzymana / Archiwum',
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+                subtitle: Text(
+                  _isActive
+                      ? 'Generuje dawki na ekranie „Dziś” i wysyła powiadomienia.'
+                      : 'Nie generuje bieżących dawek ani alarmów, ale zachowuje historię.',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                ),
+                onChanged: (val) => setState(() => _isActive = val),
+              ),
+            ),
+            const SizedBox(height: 18),
+            const Text(
+              'Okres kuracji (opcjonalnie, informacyjnie)',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'Od daty',
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: InkWell(
+                            onTap: _pickStartDate,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              child: Text(
+                                _startDate != null
+                                    ? DatabaseService.formatLocalDate(_startDate!)
+                                    : 'Nie ustawiono',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: _startDate != null ? Colors.black87 : Colors.grey.shade600,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        if (_startDate != null)
+                          IconButton(
+                            icon: const Icon(Icons.close, size: 16),
+                            visualDensity: VisualDensity.compact,
+                            onPressed: () => setState(() {
+                              _startDate = null;
+                              _dateError = _validateDates();
+                            }),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'Do daty',
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: InkWell(
+                            onTap: _pickEndDate,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              child: Text(
+                                _endDate != null
+                                    ? DatabaseService.formatLocalDate(_endDate!)
+                                    : 'Nie ustawiono',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: _endDate != null ? Colors.black87 : Colors.grey.shade600,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        if (_endDate != null)
+                          IconButton(
+                            icon: const Icon(Icons.close, size: 16),
+                            visualDensity: VisualDensity.compact,
+                            onPressed: () => setState(() {
+                              _endDate = null;
+                              _dateError = _validateDates();
+                            }),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (_dateError != null) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.red.shade200),
+                ),
+                child: Text(
+                  _dateError!,
+                  style: TextStyle(color: Colors.red.shade800, fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
             const SizedBox(height: 20),
             const Text('Kolor wyróżniający:', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),

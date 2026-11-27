@@ -23,6 +23,8 @@ dependencies:
   http: ^1.2.2
   file_picker: ^13.4.1
   share_plus: ^13.2.0
+  pdf: ^3.11.1
+  printing: ^5.13.0
 
 
 dev_dependencies:
@@ -34,3 +36,5 @@ flutter:
   uses-material-design: true
   assets:
     - assets/images/logo_icon.png
+    - assets/fonts/LiberationSans-Regular.ttf
+    - assets/fonts/LiberationSans-Bold.ttf

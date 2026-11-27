@@ -23,7 +23,9 @@ export const ProjectIdxStudio: React.FC = () => {
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState<'all' | 'config' | 'model' | 'service' | 'screen' | 'main'>('all');
+  const [categoryFilter, setCategoryFilter] = useState<
+    'all' | 'config' | 'model' | 'service' | 'screen' | 'widget' | 'main'
+  >('all');
 
   const filteredFiles = FLUTTER_PROJECT_FILES.filter((file) => {
     const matchesSearch = file.path.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -158,12 +160,17 @@ export const ProjectIdxStudio: React.FC = () => {
                 { id: 'model', label: 'Modele' },
                 { id: 'service', label: 'Serwisy' },
                 { id: 'screen', label: 'Ekrany' },
+                { id: 'widget', label: 'Widgety' },
               ].map((c) => (
                 <button
                   key={c.id}
                   type="button"
-                  onClick={() => setCategoryFilter(c.id as any)}
-                  className={`px-2.5 py-1 rounded-lg text-2xs font-bold transition-colors ${
+                  onClick={() =>
+                    setCategoryFilter(
+                      c.id as 'all' | 'config' | 'model' | 'service' | 'screen' | 'widget' | 'main'
+                    )
+                  }
+                  className={`px-2.5 py-1 rounded-lg text-2xs font-bold transition-colors whitespace-nowrap ${
                     categoryFilter === c.id
                       ? 'bg-teal-600 text-white'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -237,7 +244,7 @@ export const ProjectIdxStudio: React.FC = () => {
                 <div className="flex items-center gap-2">
                   {selectedFile.isBase64 ? (
                     <span className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 font-bold text-xs">
-                      Zasób PNG (w paczce .ZIP)
+                      Zasób {selectedFile.language.toUpperCase()} (w paczce .ZIP)
                     </span>
                   ) : (
                     <button
@@ -261,16 +268,24 @@ export const ProjectIdxStudio: React.FC = () => {
                 </div>
               </div>
 
-              {/* Code Pre Block or Binary Image Preview */}
+              {/* Code Pre Block or Binary Asset Preview */}
               {selectedFile.isBase64 ? (
                 <div className="p-8 min-h-[320px] max-h-[600px] flex flex-col items-center justify-center gap-4 bg-slate-900">
-                  <div className="bg-white rounded-2xl p-6 shadow-lg border border-slate-700/40">
-                    <img
-                      src={`data:image/png;base64,${selectedFile.content}`}
-                      alt={selectedFile.name}
-                      className="max-h-56 max-w-full object-contain"
-                    />
-                  </div>
+                  {selectedFile.language === 'png' ? (
+                    <div className="bg-white rounded-2xl p-6 shadow-lg border border-slate-700/40">
+                      <img
+                        src={`data:image/png;base64,${selectedFile.content}`}
+                        alt={selectedFile.name}
+                        className="max-h-56 max-w-full object-contain"
+                      />
+                    </div>
+                  ) : (
+                    <div className="bg-slate-800/80 rounded-2xl p-6 border border-slate-700 text-center space-y-2 max-w-md">
+                      <FileCode className="w-10 h-10 text-teal-400 mx-auto" />
+                      <div className="text-sm font-bold text-white">{selectedFile.name}</div>
+                      <p className="text-xs text-slate-300">{selectedFile.description}</p>
+                    </div>
+                  )}
                   <p className="text-xs text-slate-400 font-mono">
                     {selectedFile.path}
                   </p>
@@ -288,7 +303,7 @@ export const ProjectIdxStudio: React.FC = () => {
                 <span>{selectedFile.description}</span>
                 <span className="font-mono">
                   {selectedFile.isBase64
-                    ? `${Math.round((selectedFile.content.length * 3) / 4 / 1024 * 10) / 10} KB (PNG)`
+                    ? `${Math.round((selectedFile.content.length * 3) / 4 / 1024 * 10) / 10} KB (${selectedFile.language.toUpperCase()})`
                     : `${selectedFile.content.split('\n').length} linii`}
                 </span>
               </div>

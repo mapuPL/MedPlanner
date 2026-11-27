@@ -457,10 +457,76 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Future<void> _showDoseNoteDialog(DoseLog dose) async {
+    final controller = TextEditingController(text: dose.notes ?? '');
+    final result = await showDialog<String?>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.edit_note, color: Colors.teal),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Notatka do dawki: ${dose.medicationName ?? "Lek"}',
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: TextField(
+          controller: controller,
+          maxLines: 3,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Notatka (opcjonalnie)',
+            hintText: 'np. Zmierzone ciśnienie 125/80, po śniadaniu...',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          if (dose.notes != null && dose.notes!.trim().isNotEmpty)
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, ''),
+              child: const Text('Usuń notatkę', style: TextStyle(color: Colors.redAccent)),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('Anuluj'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF0F766E),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(ctx, controller.text),
+            child: const Text('Zapisz'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+
+    if (result != null) {
+      await DatabaseService.instance.updateDoseNote(dose.id, result);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.trim().isEmpty ? 'Usunięto notatkę do dawki.' : 'Zapisano notatkę do dawki.'),
+            duration: const Duration(seconds: 2),
+            backgroundColor: Colors.teal.shade800,
+          ),
+        );
+      }
+    }
+  }
+
   Widget _buildDoseItem(DoseLog dose) {
     final isTaken = dose.status == DoseStatus.taken;
     final isSnoozed = dose.status == DoseStatus.snoozed;
     final isSkipped = dose.status == DoseStatus.skipped;
+    final hasInstructions = dose.instructions != null && dose.instructions!.trim().isNotEmpty;
+    final hasNotes = dose.notes != null && dose.notes!.trim().isNotEmpty;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -475,6 +541,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
@@ -516,12 +583,22 @@ class _HomeScreenState extends State<HomeScreen> {
                     const SizedBox(height: 2),
                     Text(
                       _selectedProfile == null
-                          ? '${dose.doseAmount ?? "1"} · ${dose.therapyName ?? "Terapia"} · ${dose.profileName ?? "Mój profil"}'
-                          : '${dose.doseAmount ?? "1"} · ${dose.therapyName ?? "Terapia"}',
+                          ? '${dose.formattedDose} · ${dose.therapyName ?? "Terapia"} · ${dose.profileName ?? "Mój profil"}'
+                          : '${dose.formattedDose} · ${dose.therapyName ?? "Terapia"}',
                       style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
                     ),
                   ],
                 ),
+              ),
+              IconButton(
+                icon: Icon(
+                  hasNotes ? Icons.sticky_note_2 : Icons.edit_note_outlined,
+                  size: 20,
+                  color: hasNotes ? Colors.amber.shade800 : Colors.grey.shade500,
+                ),
+                tooltip: hasNotes ? 'Edytuj notatkę' : 'Dodaj notatkę',
+                visualDensity: VisualDensity.compact,
+                onPressed: () => _showDoseNoteDialog(dose),
               ),
               Text(
                 isTaken
@@ -539,6 +616,55 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ],
           ),
+          if (hasInstructions) ...[
+            const SizedBox(height: 8),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.info_outline, size: 14, color: Colors.teal.shade700),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    dose.instructions!.trim(),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.teal.shade900,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+          if (hasNotes) ...[
+            const SizedBox(height: 6),
+            InkWell(
+              onTap: () => _showDoseNoteDialog(dose),
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.amber.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.amber.shade200),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.sticky_note_2_outlined, size: 14, color: Colors.amber.shade900),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        dose.notes!.trim(),
+                        style: TextStyle(fontSize: 12, color: Colors.amber.shade900),
+                      ),
+                    ),
+                    Icon(Icons.edit, size: 12, color: Colors.amber.shade800),
+                  ],
+                ),
+              ),
+            ),
+          ],
           if (!isTaken && !isSkipped) ...[
             const SizedBox(height: 12),
             Row(

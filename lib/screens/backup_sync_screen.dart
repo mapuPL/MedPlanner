@@ -1,7 +1,10 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import '../services/google_drive_sync_service.dart';
 import '../services/database_service.dart';
@@ -310,6 +313,197 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
         _isSuccessMessage = false;
         _isLoading = false;
       });
+    }
+  }
+
+  /// Eksport kompletnych danych w formacie JSON kompatybilnym z aplikacją webową MedPlaner
+  Future<void> _handleExportJson() async {
+    setState(() {
+      _isLoading = true;
+      _statusMessage = null;
+    });
+    try {
+      final jsonStr = await DatabaseService.instance.exportBackupJsonString();
+      final bytes = Uint8List.fromList(utf8.encode(jsonStr));
+      final dateStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
+      final fileName = 'medplaner-backup-$dateStr.json';
+
+      String? savedUserPath;
+      try {
+        savedUserPath = await FilePicker.saveFile(
+          dialogTitle: 'Zapisz kopię JSON MedPlaner',
+          fileName: fileName,
+          bytes: bytes,
+        );
+      } catch (_) {}
+
+      final tempDir = await getTemporaryDirectory();
+      final tempFile = File('${tempDir.path}/$fileName');
+      await tempFile.writeAsBytes(bytes, flush: true);
+
+      final sizeKb = (bytes.length / 1024).toStringAsFixed(1);
+      if (mounted) {
+        setState(() {
+          _statusMessage = savedUserPath != null
+              ? 'Wyeksportowano kopię JSON ($sizeKb KB) do:\n$savedUserPath\n\nPlik jest w 100% kompatybilny z wersją webową MedPlaner.'
+              : 'Przygotowano kopię JSON ($sizeKb KB) w formacie kompatybilnym z wersją webową MedPlaner.';
+          _isSuccessMessage = true;
+          _isDeveloperError = false;
+          _isLoading = false;
+        });
+
+        if (savedUserPath == null) {
+          await SharePlus.instance.share(
+            ShareParams(
+              files: [XFile(tempFile.path, name: fileName, mimeType: 'application/json')],
+              subject: 'Kopia zapasowa JSON MedPlaner ($dateStr)',
+              text: 'Kopia zapasowa MedPlaner w formacie JSON (profile, terapie, leki, historia dawek).',
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _statusMessage = 'Nie udało się wyeksportować kopii JSON: $e';
+          _isSuccessMessage = false;
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  /// Import kopii JSON (z Weba lub Fluttera) z oknem wyboru: Zastąp lub Scal
+  Future<void> _handleImportJson() async {
+    try {
+      final PlatformFile? picked = await FilePicker.pickFile(
+        dialogTitle: 'Wybierz plik kopii JSON MedPlaner',
+        type: FileType.custom,
+        allowedExtensions: const ['json'],
+        withData: true,
+      );
+
+      if (picked == null) return;
+
+      String jsonStr;
+      if (picked.bytes != null) {
+        jsonStr = utf8.decode(picked.bytes!);
+      } else if (picked.path != null) {
+        jsonStr = await File(picked.path!).readAsString();
+      } else {
+        if (!mounted) return;
+        setState(() {
+          _statusMessage = 'Nie udało się odczytać wybranego pliku JSON.';
+          _isSuccessMessage = false;
+        });
+        return;
+      }
+
+      final preview = DatabaseService.instance.inspectBackupJsonString(jsonStr);
+      if (!mounted) return;
+
+      // Wybór trybu: null = anuluj, true = zastąp, false = scal
+      final bool? replaceExisting = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.data_object, color: Colors.teal, size: 24),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text('Import kopii JSON', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Plik: "${picked.name}"',
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.teal.shade50,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.teal.shade100),
+                ),
+                child: Text(
+                  '• Profile: ${preview.profilesCount}\n'
+                  '• Terapie: ${preview.therapiesCount}\n'
+                  '• Leki: ${preview.medicationsCount}\n'
+                  '• Historia dawek: ${preview.doseLogsCount}\n'
+                  '• Zmiany dawek: ${preview.medicationChangesCount}',
+                  style: TextStyle(fontSize: 12.5, height: 1.45, color: Colors.teal.shade900),
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Czy chcesz zastąpić obecne dane w aplikacji, czy scalić je z istniejącymi?',
+                style: TextStyle(fontSize: 12.5, height: 1.4, color: Color(0xFF475569)),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, null),
+              child: const Text('Anuluj'),
+            ),
+            OutlinedButton(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.teal.shade800,
+                side: BorderSide(color: Colors.teal.shade300),
+              ),
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Scal z obecnymi'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Zastąp bieżące'),
+            ),
+          ],
+        ),
+      );
+
+      if (replaceExisting == null) return;
+
+      setState(() => _isLoading = true);
+      final imported = await DatabaseService.instance.importBackupJsonString(
+        jsonStr,
+        replaceExisting: replaceExisting,
+      );
+
+      if (mounted) {
+        final modeLabel = replaceExisting ? 'zastąpiono bieżące dane' : 'scalono z obecnymi danymi';
+        setState(() {
+          _statusMessage =
+              'Zaimportowano kopię JSON ($modeLabel): '
+              '${imported.profilesCount} profili, ${imported.therapiesCount} terapii, '
+              '${imported.medicationsCount} leków, ${imported.doseLogsCount} wpisów historii.';
+          _isSuccessMessage = true;
+          _isDeveloperError = false;
+          _isLoading = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Kopia JSON została pomyślnie zaimportowana.'),
+            backgroundColor: Colors.teal,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _statusMessage = 'Błąd importu kopii JSON: $e';
+          _isSuccessMessage = false;
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -640,6 +834,60 @@ class _BackupSyncScreenState extends State<BackupSyncScreen> {
                           icon: const Icon(Icons.folder_open_outlined, size: 17),
                           label: const Text('Wskaż plik .db', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                           onPressed: _isLoading ? null : _handlePickAndRestoreBackup,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  const Divider(height: 1),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Icon(Icons.data_object, color: Colors.teal.shade700, size: 18),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text(
+                          'Kopia międzyplatformowa JSON (Web ↔ Android)',
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Uniwersalny format JSON (profiles, therapies, medications, doseLogs) do wymiany danych z wersją webową.',
+                    style: TextStyle(fontSize: 11.5, height: 1.4, color: Color(0xFF475569)),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.teal.shade50,
+                            foregroundColor: Colors.teal.shade900,
+                            elevation: 0,
+                            side: BorderSide(color: Colors.teal.shade200),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          icon: const Icon(Icons.download_outlined, size: 17),
+                          label: const Text('Eksportuj kopię JSON', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          onPressed: _isLoading ? null : _handleExportJson,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.teal.shade800,
+                            side: BorderSide(color: Colors.teal.shade300),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          icon: const Icon(Icons.upload_file_outlined, size: 17),
+                          label: const Text('Importuj kopię JSON', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          onPressed: _isLoading ? null : _handleImportJson,
                         ),
                       ),
                     ],

@@ -13,14 +13,13 @@ export interface RegisteredMedicine {
 }
 
 export function getDosageUnitLabel(type: RegisteredMedicine['defaultType'], unitOverride?: string): string {
-  if (unitOverride) return unitOverride;
   switch (type) {
-    case 'capsule': return 'tabl. / kaps.';
+    case 'capsule': return 'tabl.';
     case 'drops': return 'kropli';
-    case 'ml': return 'ml (syrop / zawiesina)';
-    case 'inhaler': return 'dawka wziewna';
-    case 'application': return 'aplikacja / zastrzyk';
-    default: return 'dawka';
+    case 'ml': return 'ml';
+    case 'inhaler': return 'wziew';
+    case 'application': return 'aplik.';
+    default: return unitOverride || 'dawka';
   }
 }
 
@@ -538,17 +537,19 @@ export function searchMedicines(
   });
 }
 
-export const STANDARD_DOSAGE_UNITS = [
-  'tabl. powlekana',
-  'kapsułka',
-  'krople',
-  'ml (syrop)',
-  'dawka wziewna',
-  'saszetka',
-  'aplikacja (maść/krem)',
-  'ampułka / zastrzyk',
-  'czopek',
-  'plaster',
+export interface UnifiedDosageUnitOption {
+  type: RegisteredMedicine['defaultType'];
+  label: string;
+  shortUnit: string;
+}
+
+export const STANDARD_DOSAGE_UNITS: UnifiedDosageUnitOption[] = [
+  { type: 'capsule', label: 'Kapsułka / Tabletka (tabl.)', shortUnit: 'tabl.' },
+  { type: 'drops', label: 'Krople (kropli)', shortUnit: 'kropli' },
+  { type: 'ml', label: 'ml (płyn / syrop)', shortUnit: 'ml' },
+  { type: 'inhaler', label: 'Wziew (wziew)', shortUnit: 'wziew' },
+  { type: 'application', label: 'Aplikacja (maść / aerozol)', shortUnit: 'aplik.' },
+  { type: 'other', label: 'Inne (dawka)', shortUnit: 'dawka' },
 ];
 
 export interface FrequencyOption {

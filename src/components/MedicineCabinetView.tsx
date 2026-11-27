@@ -1,25 +1,27 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Package,
   AlertTriangle,
   Calendar,
   Plus,
-  RefreshCw,
   FileText,
   Printer,
   Copy,
   Check,
   ShieldCheck,
   X,
+  Users,
 } from 'lucide-react';
 import {
   Medication,
   Therapy,
   FamilyProfile,
   DoseItem,
+  DoctorReportPeriodDays,
   MEDICATION_TYPE_LABELS,
   evaluateCabinetStatus,
-  calculateCompliance,
+  calculateDoctorReportSummary,
+  resolveProfileId,
   formatDoseDisplay,
 } from '../utils/medicationLogic';
 
@@ -31,6 +33,7 @@ interface MedicineCabinetViewProps {
   activeProfileId: string;
   onRefillMedication: (medicationId: string, addAmount?: number) => void;
   onUpdateStockAndExpiry: (medicationId: string, stockQuantity: number, expiryDate?: string) => void;
+  onOpenPdfReport?: () => void;
   compact?: boolean;
 }
 
@@ -42,33 +45,62 @@ export const MedicineCabinetView: React.FC<MedicineCabinetViewProps> = ({
   activeProfileId,
   onRefillMedication,
   onUpdateStockAndExpiry,
+  onOpenPdfReport,
   compact = false,
 }) => {
   const [filterAlert, setFilterAlert] = useState<'all' | 'alerts'>('all');
+  const [showAllProfiles, setShowAllProfiles] = useState(false);
   const [editingMedId, setEditingMedId] = useState<string | null>(null);
   const [editStockVal, setEditStockVal] = useState<string>('');
   const [editExpiryVal, setEditExpiryVal] = useState<string>('');
   const [isDoctorReportOpen, setIsDoctorReportOpen] = useState(false);
+  const [reportDays, setReportDays] = useState<DoctorReportPeriodDays>(7);
   const [copiedReport, setCopiedReport] = useState(false);
 
-  const visibleMeds = medications.filter((m) => {
-    if (activeProfileId === 'all') return true;
-    const therapy = therapies.find((t) => t.id === m.therapyId);
-    const prof = m.profileId || therapy?.profileId || 'self';
-    return prof === activeProfileId;
-  });
+  useEffect(() => {
+    setShowAllProfiles(false);
+  }, [activeProfileId]);
 
-  const enriched = visibleMeds.map((med) => {
-    const therapy = therapies.find((t) => t.id === med.therapyId);
-    const profId = med.profileId || therapy?.profileId || 'self';
-    const profile = profiles.find((p) => p.id === profId) || profiles[0];
-    const evalResult = evaluateCabinetStatus(med);
-    return { med, therapy, profile, ...evalResult };
-  });
+  const effectiveProfileId = showAllProfiles ? 'all' : activeProfileId;
+  const activeProfileObj = profiles.find((p) => p.id === activeProfileId);
+  const scopeLabel =
+    effectiveProfileId === 'all'
+      ? 'Wszystkie profile'
+      : activeProfileObj?.name || 'Wybrany profil';
+
+  const visibleMeds = useMemo(() => {
+    return medications.filter((m) => {
+      if (effectiveProfileId === 'all') return true;
+      const therapy = therapies.find((t) => t.id === m.therapyId);
+      return resolveProfileId(m.profileId, m, therapy) === effectiveProfileId;
+    });
+  }, [medications, therapies, effectiveProfileId]);
+
+  const enriched = useMemo(() => {
+    return visibleMeds.map((med) => {
+      const therapy = therapies.find((t) => t.id === med.therapyId);
+      const profId = resolveProfileId(med.profileId, med, therapy);
+      const profile = profiles.find((p) => p.id === profId) || profiles[0];
+      const evalResult = evaluateCabinetStatus(med);
+      return { med, therapy, profile, ...evalResult };
+    });
+  }, [visibleMeds, therapies, profiles]);
 
   const alertCount = enriched.filter((item) => item.status !== 'ok').length;
   const displayed =
     filterAlert === 'alerts' ? enriched.filter((item) => item.status !== 'ok') : enriched;
+
+  const doctorReport = useMemo(
+    () =>
+      calculateDoctorReportSummary(
+        therapies,
+        medications,
+        doses,
+        effectiveProfileId,
+        reportDays
+      ),
+    [therapies, medications, doses, effectiveProfileId, reportDays]
+  );
 
   const startEdit = (med: Medication) => {
     setEditingMedId(med.id);
@@ -85,21 +117,27 @@ export const MedicineCabinetView: React.FC<MedicineCabinetViewProps> = ({
     setEditingMedId(null);
   };
 
-  const compliance = calculateCompliance(doses);
-
   const buildReportText = () => {
     const dateStr = new Date().toLocaleDateString('pl-PL');
     const lines = [
-      `RAPORT TERAPII I LEKÓW — MEDPLANER (${dateStr})`,
-      `Realizacja planu dawkowania: ${compliance.percentage}% (${compliance.taken}/${compliance.total} dawek)`,
+      `RAPORT LEKOWY DLA LEKARZA — MEDPLANER (${dateStr})`,
+      `Profil: ${scopeLabel}`,
+      `Okres analizy: ostatnie ${reportDays} dni (${doctorReport.startDate} – ${doctorReport.endDate})`,
+      `Ogólna skuteczność przyjmowania: ${doctorReport.overallPercentage}% (${doctorReport.totalTaken}/${doctorReport.totalScheduled} dawek)`,
       '',
-      ...enriched.map(({ med, therapy, profile }) => {
+      ...doctorReport.items.map((item) => {
+        const { medication: med, therapy, profileId, scheduledCount, takenCount, adherencePercentage } = item;
+        const prof = profiles.find((p) => p.id === profileId);
         const exp = med.expiryDate ? ` · Ważność: ${med.expiryDate}` : '';
         const stock =
           typeof med.stockQuantity === 'number'
             ? ` · Zapas: ${med.stockQuantity} ${MEDICATION_TYPE_LABELS[med.type]?.unit || 'szt.'}`
             : '';
-        return `• ${med.name} [${profile?.name || 'Mój profil'}]\n  Terapia: ${therapy?.name || 'Ogólna'}\n  Dawka: ${formatDoseDisplay(med.doseAmount, med.type)} · Godziny: ${med.times.join(', ')}${stock}${exp}${med.instructions ? `\n  Zalecenia: ${med.instructions}` : ''}`;
+        const adherenceStr =
+          adherencePercentage !== null
+            ? `${adherencePercentage}% (${takenCount}/${scheduledCount} dawek)`
+            : 'brak zaplanowanych dawek w tym okresie';
+        return `• ${med.name} [${prof?.name || 'Mój profil'}]\n  Terapia: ${therapy?.name || 'Ogólna'}\n  Dawka: ${formatDoseDisplay(med.doseAmount, med.type)} · Godziny: ${med.times.join(', ')}\n  Skuteczność (${reportDays} dni): ${adherenceStr}${stock}${exp}${med.instructions ? `\n  Zalecenia: ${med.instructions}` : ''}`;
       }),
     ];
     return lines.join('\n');
@@ -118,9 +156,9 @@ export const MedicineCabinetView: React.FC<MedicineCabinetViewProps> = ({
       {/* Summary Header Card */}
       <div className="bg-white rounded-2xl border border-slate-200/80 p-4 shadow-2xs">
         <div className="flex items-start justify-between gap-3">
-          <div>
+          <div className="min-w-0">
             <p className="text-[11px] font-bold uppercase tracking-wider text-teal-700">
-              Domowa Apteczka
+              Domowa Apteczka · {scopeLabel}
             </p>
             <h3 className="text-base font-extrabold text-slate-900 mt-0.5">
               Zapasy i terminy ważności
@@ -133,23 +171,36 @@ export const MedicineCabinetView: React.FC<MedicineCabinetViewProps> = ({
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setIsDoctorReportOpen(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-teal-50 hover:bg-teal-100 text-teal-800 text-xs font-bold transition-colors shrink-0"
-          >
-            <FileText className="w-3.5 h-3.5" />
-            <span>Raport</span>
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {onOpenPdfReport && (
+              <button
+                type="button"
+                onClick={onOpenPdfReport}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold transition-colors shrink-0 whitespace-nowrap"
+                title="Konfiguruj i pobierz kartę terapii PDF dla lekarza"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Raport PDF</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setIsDoctorReportOpen(true)}
+              className="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-xl bg-teal-50 hover:bg-teal-100 text-teal-800 text-xs font-bold transition-colors shrink-0 whitespace-nowrap"
+              title="Szybki podgląd tekstowy"
+            >
+              <span>Skrót</span>
+            </button>
+          </div>
         </div>
 
-        {/* Clean segmented filter */}
-        <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+        {/* Clean segmented filter + optional All Profiles toggle */}
+        <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
           <div className="inline-flex bg-slate-100 p-0.5 rounded-xl">
             <button
               type="button"
               onClick={() => setFilterAlert('all')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all tabular-nums ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all tabular-nums whitespace-nowrap ${
                 filterAlert === 'all'
                   ? 'bg-white text-slate-900 shadow-2xs'
                   : 'text-slate-500 hover:text-slate-800'
@@ -160,7 +211,7 @@ export const MedicineCabinetView: React.FC<MedicineCabinetViewProps> = ({
             <button
               type="button"
               onClick={() => setFilterAlert('alerts')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all tabular-nums ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all tabular-nums whitespace-nowrap ${
                 filterAlert === 'alerts'
                   ? 'bg-white text-amber-800 shadow-2xs'
                   : 'text-slate-500 hover:text-slate-800'
@@ -170,9 +221,24 @@ export const MedicineCabinetView: React.FC<MedicineCabinetViewProps> = ({
             </button>
           </div>
 
-          <span className="text-[11px] text-slate-400 font-medium hidden sm:inline">
-            Automatyczne odliczanie po dawce
-          </span>
+          {activeProfileId !== 'all' ? (
+            <button
+              type="button"
+              onClick={() => setShowAllProfiles((v) => !v)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-bold transition-colors whitespace-nowrap ${
+                showAllProfiles
+                  ? 'bg-slate-900 text-white'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+              }`}
+            >
+              <Users className="w-3 h-3" />
+              <span>{showAllProfiles ? `Tylko ${activeProfileObj?.name || 'aktywny'}` : 'Wszystkie profile'}</span>
+            </button>
+          ) : (
+            <span className="text-[11px] text-slate-400 font-medium hidden sm:inline">
+              Automatyczne odliczanie po dawce
+            </span>
+          )}
         </div>
       </div>
 
@@ -231,7 +297,7 @@ export const MedicineCabinetView: React.FC<MedicineCabinetViewProps> = ({
                       />
                       <span className="truncate">{therapy?.name || 'Terapia'}</span>
                       <span>·</span>
-                      <span className="text-slate-700">{profile?.name || 'Ja'}</span>
+                      <span className="text-slate-700">{profile?.name || 'Mój profil'}</span>
                     </div>
                     <h4 className="font-bold text-sm text-slate-900 mt-0.5 truncate">{med.name}</h4>
                   </div>
@@ -353,22 +419,30 @@ export const MedicineCabinetView: React.FC<MedicineCabinetViewProps> = ({
       {/* Doctor Report Modal */}
       {isDoctorReportOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl border border-slate-200 overflow-hidden">
+          <div
+            className="bg-white rounded-3xl max-w-lg w-full shadow-2xl border border-slate-200 overflow-hidden"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="doctor-report-title"
+          >
             <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-teal-700 text-white flex items-center justify-center">
+                <div className="w-9 h-9 rounded-xl bg-teal-700 text-white flex items-center justify-center shrink-0">
                   <FileText className="w-4 h-4" />
                 </div>
                 <div>
-                  <h4 className="font-extrabold text-sm text-slate-900">Raport lekowy dla lekarza</h4>
+                  <h4 id="doctor-report-title" className="font-extrabold text-sm text-slate-900">
+                    Raport lekowy dla lekarza
+                  </h4>
                   <p className="text-[11px] text-slate-500">
-                    Zestawienie przyjmowanych leków, dawek i realizacji
+                    {scopeLabel} · Ostatnie {reportDays} dni
                   </p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setIsDoctorReportOpen(false)}
+                aria-label="Zamknij raport"
                 className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/60"
               >
                 <X className="w-4 h-4" />
@@ -376,34 +450,102 @@ export const MedicineCabinetView: React.FC<MedicineCabinetViewProps> = ({
             </div>
 
             <div className="p-5 space-y-3 max-h-[65vh] overflow-y-auto">
+              {/* Period + Profile Scope Controls */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="inline-flex bg-slate-100 p-0.5 rounded-xl">
+                  {([7, 14, 30] as DoctorReportPeriodDays[]).map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => setReportDays(d)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all tabular-nums whitespace-nowrap ${
+                        reportDays === d
+                          ? 'bg-white text-teal-800 shadow-2xs'
+                          : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      {d} dni
+                    </button>
+                  ))}
+                </div>
+
+                {activeProfileId !== 'all' && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllProfiles((v) => !v)}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-bold transition-colors whitespace-nowrap ${
+                      showAllProfiles
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                    }`}
+                  >
+                    <Users className="w-3 h-3" />
+                    <span>
+                      {showAllProfiles
+                        ? `Wróć do: ${activeProfileObj?.name || 'profil'}`
+                        : 'Wszystkie profile'}
+                    </span>
+                  </button>
+                )}
+              </div>
+
               <div className="p-3 rounded-xl bg-teal-50 border border-teal-200/70 flex items-center justify-between text-xs">
-                <span className="font-semibold text-teal-900">Skuteczność przyjmowania dawek:</span>
+                <span className="font-semibold text-teal-900">
+                  Skuteczność przyjmowania ({reportDays} dni):
+                </span>
                 <span className="font-extrabold text-teal-800 tabular-nums">
-                  {compliance.percentage}% ({compliance.taken}/{compliance.total})
+                  {doctorReport.overallPercentage}% ({doctorReport.totalTaken}/{doctorReport.totalScheduled})
                 </span>
               </div>
 
-              <div className="divide-y divide-slate-100 border border-slate-200 rounded-2xl bg-slate-50/50">
-                {enriched.map(({ med, therapy, profile }) => (
-                  <div key={med.id} className="p-3 space-y-0.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-bold text-xs text-slate-900">{med.name}</span>
-                      <span className="text-[11px] font-semibold text-teal-700 tabular-nums">
-                        {formatDoseDisplay(med.doseAmount, med.type)}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-slate-500">
-                      {profile?.name || 'Mój profil'} · {therapy?.name || 'Terapia'} · Godziny:{' '}
-                      <span className="font-semibold text-slate-700 tabular-nums">
-                        {med.times.join(', ')}
-                      </span>
-                    </p>
-                    {med.instructions && (
-                      <p className="text-[11px] text-slate-500 italic">{med.instructions}</p>
-                    )}
-                  </div>
-                ))}
-              </div>
+              {doctorReport.items.length === 0 ? (
+                <div className="p-6 text-center rounded-2xl border border-slate-200 bg-slate-50/50 text-xs text-slate-500">
+                  Brak leków przypisanych dla wybranego profilu.
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100 border border-slate-200 rounded-2xl bg-slate-50/50">
+                  {doctorReport.items.map(
+                    ({ medication: med, therapy, profileId, scheduledCount, takenCount, adherencePercentage }) => {
+                      const profile = profiles.find((p) => p.id === profileId);
+                      return (
+                        <div key={med.id} className="p-3 space-y-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-bold text-xs text-slate-900 truncate">{med.name}</span>
+                            <span
+                              className={`text-[11px] font-extrabold tabular-nums shrink-0 ${
+                                adherencePercentage === null
+                                  ? 'text-slate-400'
+                                  : adherencePercentage >= 80
+                                  ? 'text-emerald-700'
+                                  : adherencePercentage >= 50
+                                  ? 'text-amber-700'
+                                  : 'text-rose-700'
+                              }`}
+                            >
+                              {adherencePercentage !== null
+                                ? `${adherencePercentage}% (${takenCount}/${scheduledCount})`
+                                : 'Brak w tym okresie'}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-500">
+                            {profile?.name || 'Mój profil'} · {therapy?.name || 'Terapia'} ·{' '}
+                            <strong className="text-teal-800">
+                              {formatDoseDisplay(med.doseAmount, med.type)}
+                            </strong>{' '}
+                            · Godziny:{' '}
+                            <span className="font-semibold text-slate-700 tabular-nums">
+                              {med.times.join(', ')}
+                            </span>
+                          </p>
+                          {med.instructions && (
+                            <p className="text-[11px] text-slate-500 italic">{med.instructions}</p>
+                          )}
+                        </div>
+                      );
+                    }
+                  )}
+                </div>
+              )}
 
               <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
                 <ShieldCheck className="w-3.5 h-3.5 text-teal-600 shrink-0" />
@@ -432,11 +574,24 @@ export const MedicineCabinetView: React.FC<MedicineCabinetViewProps> = ({
               <button
                 type="button"
                 onClick={() => window.print()}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold"
               >
                 <Printer className="w-3.5 h-3.5" />
-                <span>Drukuj / PDF</span>
+                <span>Drukuj</span>
               </button>
+              {onOpenPdfReport && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsDoctorReportOpen(false);
+                    onOpenPdfReport();
+                  }}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>Generuj PDF A4</span>
+                </button>
+              )}
             </div>
           </div>
         </div>

@@ -10,6 +10,15 @@ Color parseProfileColor(String hex) {
   }
 }
 
+const List<String> profileColorPalette = [
+  '#0F766E',
+  '#8B5CF6',
+  '#3B82F6',
+  '#EC4899',
+  '#F59E0B',
+  '#EF4444',
+];
+
 class ProfileFilterBar extends StatelessWidget {
   final List<UserProfile> profiles;
   final String? selectedProfile;
@@ -104,6 +113,125 @@ class ProfileFilterBar extends StatelessWidget {
   }
 }
 
+class QuickAddProfileDialog {
+  static Future<UserProfile?> show(BuildContext context) async {
+    final nameController = TextEditingController();
+    final existing = await DatabaseService.instance.getProfiles();
+    String selectedColor = profileColorPalette[existing.length % profileColorPalette.length];
+    String? errorText;
+
+    if (!context.mounted) {
+      nameController.dispose();
+      return null;
+    }
+
+    final result = await showDialog<UserProfile>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.person_add_alt_1, color: Color(0xFF0F766E), size: 22),
+              SizedBox(width: 8),
+              Text(
+                'Nowy profil osoby',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: nameController,
+                autofocus: true,
+                textInputAction: TextInputAction.done,
+                onChanged: (_) {
+                  if (errorText != null) {
+                    setDialogState(() => errorText = null);
+                  }
+                },
+                decoration: InputDecoration(
+                  labelText: 'Imię lub nazwa profilu *',
+                  hintText: 'Np. Babcia, Marek, Zosia...',
+                  border: const OutlineInputBorder(),
+                  errorText: errorText,
+                ),
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'Kolor profilu:',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 10,
+                children: profileColorPalette.map((hex) {
+                  final color = parseProfileColor(hex);
+                  final active = selectedColor == hex;
+                  return GestureDetector(
+                    onTap: () => setDialogState(() => selectedColor = hex),
+                    child: Container(
+                      width: 30,
+                      height: 30,
+                      decoration: BoxDecoration(
+                        color: color,
+                        shape: BoxShape.circle,
+                        border: active ? Border.all(color: Colors.black, width: 2.5) : null,
+                      ),
+                      child: active ? const Icon(Icons.check, color: Colors.white, size: 16) : null,
+                    ),
+                  );
+                }).toList(),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, null),
+              child: const Text('Anuluj'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF0F766E),
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () async {
+                final trimmed = nameController.text.trim();
+                if (trimmed.isEmpty) {
+                  setDialogState(() => errorText = 'Wpisz imię lub nazwę profilu.');
+                  return;
+                }
+                final normalized = trimmed.toLowerCase();
+                if (existing.any((p) => p.name.trim().toLowerCase() == normalized)) {
+                  setDialogState(() => errorText = 'Profil o nazwie "$trimmed" już istnieje.');
+                  return;
+                }
+                try {
+                  final created = await DatabaseService.instance.insertProfile(
+                    trimmed,
+                    colorHex: selectedColor,
+                  );
+                  if (ctx.mounted) Navigator.pop(ctx, created);
+                } catch (e) {
+                  setDialogState(() {
+                    errorText = e.toString().replaceFirst('Exception: ', '');
+                  });
+                }
+              },
+              child: const Text('Dodaj i wybierz'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    nameController.dispose();
+    return result;
+  }
+}
+
 class ProfileManagerSheet extends StatefulWidget {
   final ValueChanged<String>? onProfileCreated;
 
@@ -130,18 +258,10 @@ class ProfileManagerSheet extends StatefulWidget {
 
 class _ProfileManagerSheetState extends State<ProfileManagerSheet> {
   final _nameController = TextEditingController();
-  final List<String> _colors = const [
-    '#0F766E',
-    '#8B5CF6',
-    '#3B82F6',
-    '#EC4899',
-    '#F59E0B',
-    '#EF4444',
-  ];
-
   String _selectedColor = '#0F766E';
   List<UserProfile> _profiles = [];
   Map<String, int> _therapyCounts = {};
+  Map<String, int> _medicationCounts = {};
   bool _isLoading = true;
   String? _errorMsg;
 
@@ -160,22 +280,47 @@ class _ProfileManagerSheetState extends State<ProfileManagerSheet> {
   Future<void> _loadProfiles() async {
     final profiles = await DatabaseService.instance.getProfiles();
     final therapies = await DatabaseService.instance.getTherapies();
-    final counts = <String, int>{};
+    final meds = await DatabaseService.instance.getAllMedications();
+
+    final tCounts = <String, int>{};
+    final therapyProfileMap = <String, String>{};
     for (final t in therapies) {
-      counts[t.profileName] = (counts[t.profileName] ?? 0) + 1;
+      tCounts[t.profileName] = (tCounts[t.profileName] ?? 0) + 1;
+      therapyProfileMap[t.id] = t.profileName;
     }
+
+    final mCounts = <String, int>{};
+    for (final m in meds) {
+      final pName = therapyProfileMap[m.therapyId];
+      if (pName != null) {
+        mCounts[pName] = (mCounts[pName] ?? 0) + 1;
+      }
+    }
+
     if (!mounted) return;
     setState(() {
       _profiles = profiles;
-      _therapyCounts = counts;
+      _therapyCounts = tCounts;
+      _medicationCounts = mCounts;
       _isLoading = false;
     });
+  }
+
+  bool _isDuplicateName(String candidate, {String? excludeId}) {
+    final normalized = candidate.trim().toLowerCase();
+    return _profiles.any(
+      (p) => p.id != excludeId && p.name.trim().toLowerCase() == normalized,
+    );
   }
 
   Future<void> _addProfile() async {
     final raw = _nameController.text.trim();
     if (raw.isEmpty) {
       setState(() => _errorMsg = 'Wpisz imię lub nazwę profilu.');
+      return;
+    }
+    if (_isDuplicateName(raw)) {
+      setState(() => _errorMsg = 'Profil o nazwie "$raw" już istnieje.');
       return;
     }
 
@@ -212,7 +357,10 @@ class _ProfileManagerSheetState extends State<ProfileManagerSheet> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
-          title: const Text('Edytuj użytkownika', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+          title: const Text(
+            'Edytuj użytkownika',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -220,6 +368,11 @@ class _ProfileManagerSheetState extends State<ProfileManagerSheet> {
               TextField(
                 controller: editController,
                 autofocus: true,
+                onChanged: (_) {
+                  if (dialogError != null) {
+                    setDialogState(() => dialogError = null);
+                  }
+                },
                 decoration: InputDecoration(
                   labelText: 'Nazwa / Imię',
                   border: const OutlineInputBorder(),
@@ -231,7 +384,7 @@ class _ProfileManagerSheetState extends State<ProfileManagerSheet> {
               const SizedBox(height: 8),
               Wrap(
                 spacing: 10,
-                children: _colors.map((hex) {
+                children: profileColorPalette.map((hex) {
                   final color = parseProfileColor(hex);
                   final active = editColor == hex;
                   return GestureDetector(
@@ -257,12 +410,24 @@ class _ProfileManagerSheetState extends State<ProfileManagerSheet> {
               child: const Text('Anuluj'),
             ),
             ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0F766E), foregroundColor: Colors.white),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF0F766E),
+                foregroundColor: Colors.white,
+              ),
               onPressed: () async {
+                final trimmed = editController.text.trim();
+                if (trimmed.isEmpty) {
+                  setDialogState(() => dialogError = 'Nazwa użytkownika nie może być pusta.');
+                  return;
+                }
+                if (_isDuplicateName(trimmed, excludeId: profile.id)) {
+                  setDialogState(() => dialogError = 'Profil o nazwie "$trimmed" już istnieje.');
+                  return;
+                }
                 try {
                   await DatabaseService.instance.updateProfile(
                     profile,
-                    name: editController.text,
+                    name: trimmed,
                     colorHex: editColor,
                   );
                   if (ctx.mounted) Navigator.pop(ctx, true);
@@ -293,29 +458,99 @@ class _ProfileManagerSheetState extends State<ProfileManagerSheet> {
       return;
     }
 
-    final count = _therapyCounts[profile.name] ?? 0;
-    final confirm = await showDialog<bool>(
+    final therapyCount = _therapyCounts[profile.name] ?? 0;
+    final medCount = _medicationCounts[profile.name] ?? 0;
+    final remaining = _profiles.where((p) => p.id != profile.id).toList();
+    String selectedTarget = remaining
+        .firstWhere((p) => p.isDefault, orElse: () => remaining.first)
+        .name;
+    bool deleteAllData = false;
+
+    final confirmed = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Usunąć użytkownika?'),
-        content: Text(
-          count > 0
-              ? 'Profil "${profile.name}" ma przypisane terapie ($count). Po usunięciu zostaną one przeniesione do profilu głównego.'
-              : 'Czy na pewno chcesz usunąć profil "${profile.name}"?',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Anuluj')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Usuń'),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('Usunąć użytkownika?', style: TextStyle(fontWeight: FontWeight.bold)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (therapyCount == 0 && medCount == 0)
+                Text('Czy na pewno chcesz usunąć profil "${profile.name}"?')
+              else ...[
+                Text(
+                  'Profil "${profile.name}" ma przypisane terapie ($therapyCount) oraz leki ($medCount). Wybierz sposób postępowania:',
+                  style: const TextStyle(fontSize: 13),
+                ),
+                const SizedBox(height: 12),
+                RadioListTile<bool>(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  value: false,
+                  groupValue: deleteAllData,
+                  title: const Text('Przenieś terapie na inny profil', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                  onChanged: (val) => setDialogState(() => deleteAllData = val ?? false),
+                ),
+                if (!deleteAllData)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 12, bottom: 8),
+                    child: DropdownButtonFormField<String>(
+                      value: selectedTarget,
+                      decoration: const InputDecoration(
+                        labelText: 'Docelowy profil',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      items: remaining
+                          .map((p) => DropdownMenuItem(value: p.name, child: Text(p.name)))
+                          .toList(),
+                      onChanged: (val) {
+                        if (val != null) setDialogState(() => selectedTarget = val);
+                      },
+                    ),
+                  ),
+                RadioListTile<bool>(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  value: true,
+                  groupValue: deleteAllData,
+                  title: const Text(
+                    'Usuń profil wraz z powiązanymi danymi',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.redAccent),
+                  ),
+                  subtitle: const Text(
+                    'Usunie wszystkie przypisane terapie, leki i historię dawek.',
+                    style: TextStyle(fontSize: 11),
+                  ),
+                  onChanged: (val) => setDialogState(() => deleteAllData = val ?? true),
+                ),
+              ],
+            ],
           ),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Anuluj'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(deleteAllData ? 'Usuń wszystko' : 'Usuń profil'),
+            ),
+          ],
+        ),
       ),
     );
 
-    if (confirm == true) {
-      await DatabaseService.instance.deleteProfile(profile);
+    if (confirmed == true) {
+      await DatabaseService.instance.deleteProfile(
+        profile,
+        transferToProfileName: deleteAllData ? null : selectedTarget,
+        deleteRelatedData: deleteAllData,
+      );
       await _loadProfiles();
     }
   }
@@ -381,11 +616,15 @@ class _ProfileManagerSheetState extends State<ProfileManagerSheet> {
                   ),
                   const SizedBox(height: 8),
                   Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Expanded(
                         child: TextField(
                           controller: _nameController,
                           textInputAction: TextInputAction.done,
+                          onChanged: (_) {
+                            if (_errorMsg != null) setState(() => _errorMsg = null);
+                          },
                           onSubmitted: (_) => _addProfile(),
                           decoration: InputDecoration(
                             hintText: 'Np. Babcia, Marek, Córka...',
@@ -416,7 +655,7 @@ class _ProfileManagerSheetState extends State<ProfileManagerSheet> {
                     children: [
                       Text('Kolor:', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
                       const SizedBox(width: 10),
-                      ..._colors.map((hex) {
+                      ...profileColorPalette.map((hex) {
                         final color = parseProfileColor(hex);
                         final selected = _selectedColor == hex;
                         return GestureDetector(
@@ -454,7 +693,8 @@ class _ProfileManagerSheetState extends State<ProfileManagerSheet> {
                       separatorBuilder: (_, __) => const SizedBox(height: 8),
                       itemBuilder: (ctx, idx) {
                         final p = _profiles[idx];
-                        final count = _therapyCounts[p.name] ?? 0;
+                        final tCount = _therapyCounts[p.name] ?? 0;
+                        final mCount = _medicationCounts[p.name] ?? 0;
                         final color = parseProfileColor(p.colorHex);
                         return Container(
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -484,7 +724,7 @@ class _ProfileManagerSheetState extends State<ProfileManagerSheet> {
                                       style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                                     ),
                                     Text(
-                                      'Przypisane terapie: $count',
+                                      'Terapie: $tCount · Leki: $mCount',
                                       style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
                                     ),
                                   ],

@@ -3,41 +3,63 @@ import {
   X,
   Search,
   Pill,
-  Sparkles,
-  Layers,
   Clock,
   Plus,
   ShieldCheck,
   AlertCircle,
   Check,
-  Info,
   CheckCircle2,
   BookmarkPlus,
-  Filter
+  Filter,
+  Calendar,
 } from 'lucide-react';
 import {
   RegisteredMedicine,
   POLISH_MEDICATIONS_REGISTRY,
   searchMedicines,
   normalizePolishText,
-  STANDARD_DOSAGE_UNITS,
   STANDARD_FREQUENCIES,
   getDefaultFrequencyForMedicine,
-  getDosageUnitLabel
+  getAllRegistryCategories,
 } from '../data/polishMedicationsRegistry';
-import { Therapy, Medication, MedicationType, ScheduleType, MEDICATION_TYPE_LABELS, formatLocalDate } from '../utils/medicationLogic';
+import {
+  Therapy,
+  Medication,
+  MedicationType,
+  ScheduleType,
+  FamilyProfile,
+  MEDICATION_TYPE_LABELS,
+  UNIFIED_DOSAGE_TYPES,
+  extractPureDoseAmount,
+  formatLocalDate,
+  validateDateRange,
+} from '../utils/medicationLogic';
 
 interface DrugDatabaseOverlayProps {
   isOpen: boolean;
   therapies: Therapy[];
+  profiles?: FamilyProfile[];
+  initialTherapyId?: string | null;
   onClose: () => void;
   onAddMedicationToTherapy: (medication: Omit<Medication, 'id'>) => void;
   onOpenAddTherapy?: () => void;
 }
 
+const WEEKDAYS = [
+  { id: 1, label: 'Pn', fullName: 'Poniedziałek' },
+  { id: 2, label: 'Wt', fullName: 'Wtorek' },
+  { id: 3, label: 'Śr', fullName: 'Środa' },
+  { id: 4, label: 'Cz', fullName: 'Czwartek' },
+  { id: 5, label: 'Pt', fullName: 'Piątek' },
+  { id: 6, label: 'Sb', fullName: 'Sobota' },
+  { id: 7, label: 'Nd', fullName: 'Niedziela' },
+];
+
 export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
   isOpen,
   therapies,
+  profiles = [],
+  initialTherapyId = null,
   onClose,
   onAddMedicationToTherapy,
   onOpenAddTherapy,
@@ -46,17 +68,21 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
   const [selectedCategory, setSelectedCategory] = useState<string>('Wszystkie');
   const [selectedMed, setSelectedMed] = useState<RegisteredMedicine | null>(null);
 
-  // Formularz konfiguracji wybranego leku
+  // Formularz konfiguracji wybranego leku (czysta ilość + 6 typów zgodnych z MedicationType)
   const [targetTherapyId, setTargetTherapyId] = useState<string>(therapies[0]?.id || '');
-  const [dosageUnit, setDosageUnit] = useState<string>('tabl. powlekana');
+  const [dosageType, setDosageType] = useState<MedicationType>('capsule');
   const [doseAmount, setDoseAmount] = useState<string>('1');
   const [selectedFreqId, setSelectedFreqId] = useState<string>('1x_rano');
   const [times, setTimes] = useState<string[]>(['08:00']);
+  const [newTimeInput, setNewTimeInput] = useState<string>('14:00');
+  const [scheduleType, setScheduleType] = useState<ScheduleType>('daily');
+  const [selectedDays, setSelectedDays] = useState<number[]>([1, 2, 3, 4, 5, 6, 7]);
   const [instructions, setInstructions] = useState<string>('');
-  const [startDate, setStartDate] = useState<string>(formatLocalDate());
+  const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
   const [packageSize, setPackageSize] = useState<string>('30');
   const [expiryDate, setExpiryDate] = useState<string>('');
+  const [formError, setFormError] = useState<string | null>(null);
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
 
   // Tryb "Koło ratunkowe" - dodawanie własnego leku
@@ -64,7 +90,7 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
   const [customName, setCustomName] = useState('');
   const [customSubstance, setCustomSubstance] = useState('');
   const [customCategory, setCustomCategory] = useState('Leki Własne');
-  const [customUnit, setCustomUnit] = useState('tabl. powlekana');
+  const [customType, setCustomType] = useState<MedicationType>('capsule');
   const [customDose, setCustomDose] = useState('1');
   const [customInstructions, setCustomInstructions] = useState('');
 
@@ -78,32 +104,79 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
     }
   });
 
-  // Aktualizuj domyślną terapię
+  const resetOverlayState = (preferredTherapyId: string) => {
+    setSearchQuery('');
+    setSelectedCategory('Wszystkie');
+    setSelectedMed(null);
+    setTargetTherapyId(preferredTherapyId);
+    setDosageType('capsule');
+    setDoseAmount('1');
+    setSelectedFreqId('1x_rano');
+    setTimes(['08:00']);
+    setNewTimeInput('14:00');
+    setScheduleType('daily');
+    setSelectedDays([1, 2, 3, 4, 5, 6, 7]);
+    setInstructions('');
+    setStartDate('');
+    setEndDate('');
+    setPackageSize('30');
+    setExpiryDate('');
+    setFormError(null);
+    setSuccessNotice(null);
+    setIsAddingCustom(false);
+    setCustomName('');
+    setCustomSubstance('');
+    setCustomCategory('Leki Własne');
+    setCustomType('capsule');
+    setCustomDose('1');
+    setCustomInstructions('');
+  };
+
+  // Pełne czyszczenie i ustawienie domyślnej terapii po otwarciu/zamknięciu
   useEffect(() => {
-    if (therapies.length > 0 && !targetTherapyId) {
-      setTargetTherapyId(therapies[0].id);
+    const preferred =
+      (initialTherapyId && therapies.some((t) => t.id === initialTherapyId)
+        ? initialTherapyId
+        : null) ||
+      therapies.find((t) => t.isActive)?.id ||
+      therapies[0]?.id ||
+      '';
+
+    if (!isOpen) {
+      resetOverlayState(preferred);
+      return;
     }
-  }, [therapies, targetTherapyId]);
+
+    resetOverlayState(preferred);
+  }, [isOpen, initialTherapyId, therapies]);
+
+  // Pełna lista kategorii spójna z katalogiem URPL / NFZ i Flutterem
+  const categories = useMemo(
+    () => ['Wszystkie', ...getAllRegistryCategories(customMedicines)],
+    [customMedicines]
+  );
 
   // Gdy użytkownik kliknie lek z listy
   const handleSelectMed = (med: RegisteredMedicine) => {
     setSelectedMed(med);
     setIsAddingCustom(false);
+    setFormError(null);
 
-    // Automatyczne ustawienie jednostki
-    setDosageUnit(med.dosageUnit || getDosageUnitLabel(med.defaultType));
-    setDoseAmount(med.defaultDose || '1');
+    // Rozdzielona czysta ilość + ujednolicony typ z 6 MedicationType
+    setDosageType(med.defaultType || 'capsule');
+    setDoseAmount(extractPureDoseAmount(med.defaultDose));
     setInstructions(med.instructions || '');
+    setScheduleType('daily');
+    setSelectedDays([1, 2, 3, 4, 5, 6, 7]);
 
-    // Automatyczne dobranie częstotliwości
     const freqInfo = getDefaultFrequencyForMedicine(med);
     const matchingFreq = STANDARD_FREQUENCIES.find((f) => f.label === freqInfo.frequency);
     if (matchingFreq) {
       setSelectedFreqId(matchingFreq.id);
-      setTimes(matchingFreq.defaultTimes);
+      setTimes([...matchingFreq.defaultTimes]);
     } else {
       setSelectedFreqId('custom');
-      setTimes(freqInfo.times.length > 0 ? freqInfo.times : ['08:00']);
+      setTimes(freqInfo.times.length > 0 ? [...freqInfo.times] : ['08:00']);
     }
   };
 
@@ -112,17 +185,35 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
     setSelectedFreqId(freqId);
     const found = STANDARD_FREQUENCIES.find((f) => f.id === freqId);
     if (found) {
-      setTimes(found.defaultTimes);
+      setTimes([...found.defaultTimes]);
     }
+  };
+
+  const toggleDay = (dayId: number) => {
+    if (selectedDays.includes(dayId)) {
+      if (selectedDays.length <= 1) {
+        setFormError('Wybierz przynajmniej jeden dzień tygodnia.');
+        return;
+      }
+      setSelectedDays(selectedDays.filter((d) => d !== dayId));
+    } else {
+      setSelectedDays([...selectedDays, dayId].sort());
+    }
+    setFormError(null);
   };
 
   // Wyliczanie listy wyników wyszukiwania i filtrowania
   const filteredMedicines = useMemo(() => {
+    const allMeds = [...customMedicines, ...POLISH_MEDICATIONS_REGISTRY];
     let list: RegisteredMedicine[] = [];
+
     if (searchQuery.trim().length > 0) {
-      list = searchMedicines(searchQuery, customMedicines, 60);
+      list = searchMedicines(searchQuery, customMedicines, 80);
+    } else if (selectedCategory !== 'Wszystkie') {
+      const normCat = normalizePolishText(selectedCategory);
+      list = allMeds.filter((m) => normalizePolishText(m.category).includes(normCat));
+      return list.slice(0, 60);
     } else {
-      // Domyślnie pokaż popularne / rekomendowane leki
       list = [...customMedicines, ...POLISH_MEDICATIONS_REGISTRY.slice(0, 40)];
     }
 
@@ -134,34 +225,18 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
     return list;
   }, [searchQuery, selectedCategory, customMedicines]);
 
-  // Kategorie do filtrów
-  const CATEGORIES = [
-    'Wszystkie',
-    'Antybiotyki',
-    'Przeciwbólowe',
-    'Kardiologia',
-    'Cukrzyca',
-    'Gastrologia',
-    'Pulmonologia',
-    'Alergia',
-    'Neurologia',
-    'Tarczyca',
-    'Witaminy',
-    'Urologia',
-    'Leki Własne',
-  ];
-
   // Zapisanie własnego leku (Koło ratunkowe)
   const handleSaveCustomMedicine = () => {
     if (!customName.trim()) return;
+    const pureDose = extractPureDoseAmount(customDose);
     const newCustom: RegisteredMedicine = {
       id: `custom_${Date.now()}`,
       name: customName.trim(),
       substance: customSubstance.trim() || 'Lek niestandardowy',
       category: customCategory || 'Leki Własne',
-      defaultType: 'capsule',
-      defaultDose: customDose || '1',
-      dosageUnit: customUnit,
+      defaultType: customType,
+      defaultDose: pureDose,
+      dosageUnit: MEDICATION_TYPE_LABELS[customType]?.unit || 'dawka',
       instructions: customInstructions || 'Zgodnie z zaleceniami lekarza',
       isCustom: true,
     };
@@ -181,32 +256,41 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
     e.preventDefault();
     if (!selectedMed) return;
     if (!targetTherapyId) {
-      alert('Proszę wybrać terapię lub utworzyć nową terapię.');
+      setFormError('Proszę wybrać terapię lub utworzyć nową terapię.');
+      return;
+    }
+    if (scheduleType === 'specific_days' && selectedDays.length === 0) {
+      setFormError('Wybierz przynajmniej jeden dzień tygodnia.');
       return;
     }
 
-    // Wyznacz typ leku dla utils (mapowanie)
-    let medType: MedicationType = selectedMed.defaultType || 'capsule';
-    if (dosageUnit.includes('kropl')) medType = 'drops';
-    else if (dosageUnit.includes('ml') || dosageUnit.includes('syrop')) medType = 'ml';
-    else if (dosageUnit.includes('wziew')) medType = 'inhaler';
-    else if (dosageUnit.includes('aplik') || dosageUnit.includes('zastrzyk')) medType = 'application';
-    else if (dosageUnit.includes('kaps')) medType = 'capsule';
+    const dateErr = validateDateRange(startDate, endDate);
+    if (dateErr) {
+      setFormError(dateErr);
+      return;
+    }
+    setFormError(null);
 
     const parsedPkg = parseFloat(packageSize.replace(',', '.'));
     const validPkg = Number.isFinite(parsedPkg) && parsedPkg > 0 ? parsedPkg : undefined;
     const selectedTherapy = therapies.find((t) => t.id === targetTherapyId);
+    const pureDose = extractPureDoseAmount(doseAmount);
 
     const newMedication: Omit<Medication, 'id'> = {
       therapyId: targetTherapyId,
       profileId: selectedTherapy?.profileId || 'self',
       name: selectedMed.name,
-      type: medType,
-      doseAmount: `${doseAmount} ${dosageUnit}`.trim(),
-      instructions: instructions || selectedMed.instructions || '',
+      type: dosageType,
+      doseAmount: pureDose,
+      instructions: instructions.trim() || selectedMed.instructions || undefined,
       times: times.length > 0 ? times : ['08:00'],
-      scheduleType: endDate ? 'date_range' : 'daily',
-      selectedDays: [1, 2, 3, 4, 5, 6, 7],
+      scheduleType:
+        scheduleType === 'specific_days'
+          ? 'specific_days'
+          : endDate || scheduleType === 'date_range'
+          ? 'date_range'
+          : 'daily',
+      selectedDays: scheduleType === 'specific_days' ? selectedDays : undefined,
       startDate: startDate || formatLocalDate(),
       endDate: endDate || undefined,
       packageSize: validPkg,
@@ -219,17 +303,21 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
 
     setSuccessNotice(`Dodano "${selectedMed.name}" do Twojego planu leczenia!`);
     setTimeout(() => {
-      setSuccessNotice(null);
       onClose();
-    }, 1200);
+    }, 900);
   };
 
   if (!isOpen) return null;
 
+  const currentShortUnit = MEDICATION_TYPE_LABELS[dosageType]?.unit || 'dawka';
+  const selectedTherapy = therapies.find((t) => t.id === targetTherapyId);
+  const selectedProfile = selectedTherapy
+    ? profiles.find((p) => p.id === (selectedTherapy.profileId || 'self'))
+    : undefined;
+
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-200">
       <div className="bg-white w-full sm:max-w-2xl sm:rounded-3xl rounded-t-3xl max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
-        
         {/* Nagłówek nakładki */}
         <div className="p-4 sm:p-5 bg-linear-to-r from-teal-800 via-teal-900 to-slate-900 text-white flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
@@ -269,7 +357,6 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
         )}
 
         <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
-          
           {/* Autocomplete Input Szukajki */}
           <div className="relative">
             <div className="relative flex items-center">
@@ -299,12 +386,12 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
             </div>
           </div>
 
-          {/* Filtry kategorii leków */}
+          {/* Filtry kategorii leków (pełna lista z rejestru) */}
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 text-2xs scrollbar-thin">
             <span className="text-slate-400 flex items-center gap-1 font-bold shrink-0 pr-1">
               <Filter className="w-3 h-3" /> Kategoria:
             </span>
-            {CATEGORIES.map((cat) => (
+            {categories.map((cat) => (
               <button
                 key={cat}
                 type="button"
@@ -320,7 +407,7 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
             ))}
           </div>
 
-          {/* KOŁO RATUNKOWE - Gdy użytkownik nie może znaleźć leku lub chce dodać własny */}
+          {/* KOŁO RATUNKOWE */}
           <div className="bg-amber-50/80 border border-amber-200/80 rounded-2xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
             <div className="flex items-start gap-2">
               <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
@@ -346,7 +433,7 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
             </button>
           </div>
 
-          {/* Formularz Koła Ratunkowego (Dodanie leku własnego) */}
+          {/* Formularz Koła Ratunkowego */}
           {isAddingCustom && (
             <div className="bg-slate-50 border-2 border-amber-300 rounded-2xl p-4 space-y-3 animate-in fade-in duration-200">
               <div className="flex items-center justify-between">
@@ -379,24 +466,29 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="block text-2xs font-bold text-slate-700 mb-1">Jednostka dawkowania</label>
+                  <label className="block text-2xs font-bold text-slate-700 mb-1">Typ / jednostka dawki</label>
                   <select
-                    value={customUnit}
-                    onChange={(e) => setCustomUnit(e.target.value)}
+                    value={customType}
+                    onChange={(e) => setCustomType(e.target.value as MedicationType)}
                     className="w-full px-3 py-2 bg-white rounded-xl border border-slate-300 text-xs text-slate-900 focus:border-teal-600 focus:outline-hidden"
                   >
-                    {STANDARD_DOSAGE_UNITS.map((u) => (
-                      <option key={u} value={u}>{u}</option>
+                    {UNIFIED_DOSAGE_TYPES.map((opt) => (
+                      <option key={opt.type} value={opt.type}>
+                        {opt.label}
+                      </option>
                     ))}
                   </select>
                 </div>
                 <div>
-                  <label className="block text-2xs font-bold text-slate-700 mb-1">Standardowa ilość dawki</label>
+                  <label className="block text-2xs font-bold text-slate-700 mb-1">
+                    Standardowa ilość ({MEDICATION_TYPE_LABELS[customType]?.unit || 'dawka'})
+                  </label>
                   <input
                     type="text"
+                    inputMode="decimal"
                     value={customDose}
                     onChange={(e) => setCustomDose(e.target.value)}
-                    placeholder="np. 1, 2, 5 ml, 10 kropli"
+                    placeholder="np. 1, 2, 5"
                     className="w-full px-3 py-2 bg-white rounded-xl border border-slate-300 text-xs text-slate-900 focus:border-teal-600 focus:outline-hidden"
                   />
                 </div>
@@ -435,9 +527,8 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
 
           {/* Dwie kolumny na dużym ekranie: Lista wyników + Panel konfiguracji wybranego leku */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-            
-            {/* Lewa kolumna: Lista leków (wyniki wyszukiwania) */}
-            <div className="lg:col-span-6 space-y-2 max-h-[380px] overflow-y-auto pr-1">
+            {/* Lewa kolumna: Lista leków */}
+            <div className="lg:col-span-6 space-y-2 max-h-[420px] overflow-y-auto pr-1">
               <div className="text-2xs font-black uppercase tracking-wider text-slate-500 px-1">
                 Wybierz lek, aby dostosować jednostkę i częstotliwość:
               </div>
@@ -453,6 +544,7 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
               ) : (
                 filteredMedicines.map((med) => {
                   const isSelected = selectedMed?.id === med.id;
+                  const unitLabel = MEDICATION_TYPE_LABELS[med.defaultType]?.unit || 'dawka';
                   return (
                     <button
                       key={med.id}
@@ -482,16 +574,20 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
                           <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 font-bold">
                             {med.category}
                           </span>
-                          <span className="px-2 py-0.5 rounded-full bg-teal-100 text-teal-800 font-bold">
-                            {med.dosageUnit || getDosageUnitLabel(med.defaultType)}
+                          <span className="px-2 py-0.5 rounded-full bg-teal-100 text-teal-800 font-bold tabular-nums">
+                            {extractPureDoseAmount(med.defaultDose)} {unitLabel}
                           </span>
                         </div>
                       </div>
 
                       <div className="shrink-0 pt-0.5">
-                        <div className={`w-5 h-5 rounded-full flex items-center justify-center border transition-all ${
-                          isSelected ? 'bg-teal-600 border-teal-600 text-white' : 'border-slate-300 bg-white text-transparent'
-                        }`}>
+                        <div
+                          className={`w-5 h-5 rounded-full flex items-center justify-center border transition-all ${
+                            isSelected
+                              ? 'bg-teal-600 border-teal-600 text-white'
+                              : 'border-slate-300 bg-white text-transparent'
+                          }`}
+                        >
                           <Check className="w-3 h-3 stroke-[3]" />
                         </div>
                       </div>
@@ -501,7 +597,7 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
               )}
             </div>
 
-            {/* Prawa kolumna: Szczegóły leku, Jednostka dawkowania, Częstotliwość i Dodanie do terapii */}
+            {/* Prawa kolumna: Konfiguracja wybranego leku */}
             <div className="lg:col-span-6 bg-slate-50 rounded-2xl p-4 border border-slate-200 flex flex-col justify-between">
               {selectedMed ? (
                 <form onSubmit={handleConfirmAddToTherapy} className="space-y-3.5">
@@ -539,33 +635,47 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
                         )}
                       </div>
                     ) : (
-                      <select
-                        value={targetTherapyId}
-                        onChange={(e) => setTargetTherapyId(e.target.value)}
-                        className="w-full px-3 py-2 bg-white rounded-xl border border-slate-300 text-xs text-slate-900 font-semibold focus:border-teal-600 focus:outline-hidden"
-                      >
-                        {therapies.map((t) => (
-                          <option key={t.id} value={t.id}>
-                            {t.name} ({t.isActive ? 'Aktywna' : 'Wstrzymana'})
-                          </option>
-                        ))}
-                      </select>
+                      <>
+                        <select
+                          value={targetTherapyId}
+                          onChange={(e) => setTargetTherapyId(e.target.value)}
+                          className="w-full px-3 py-2 bg-white rounded-xl border border-slate-300 text-xs text-slate-900 font-semibold focus:border-teal-600 focus:outline-hidden"
+                        >
+                          {therapies.map((t) => {
+                            const prof = profiles.find((p) => p.id === (t.profileId || 'self'));
+                            const profileSuffix = prof ? ` · ${prof.name}` : '';
+                            return (
+                              <option key={t.id} value={t.id}>
+                                {t.name}
+                                {profileSuffix} ({t.isActive ? 'Aktywna' : 'Wstrzymana'})
+                              </option>
+                            );
+                          })}
+                        </select>
+                        {selectedTherapy && (
+                          <p className="mt-1 text-[10px] font-semibold text-teal-700">
+                            Profil pacjenta: {selectedProfile?.name || 'Mój profil'}
+                          </p>
+                        )}
+                      </>
                     )}
                   </div>
 
-                  {/* 2. Jednostka dawkowania i ilość */}
+                  {/* 2. Rozdzielony typ dawki (6 typów MedicationType) i czysta ilość */}
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="block text-2xs font-bold text-slate-700 mb-1">
-                        Jednostka dawki
+                        Typ / jednostka dawki
                       </label>
                       <select
-                        value={dosageUnit}
-                        onChange={(e) => setDosageUnit(e.target.value)}
+                        value={dosageType}
+                        onChange={(e) => setDosageType(e.target.value as MedicationType)}
                         className="w-full px-3 py-2 bg-white rounded-xl border border-slate-300 text-xs text-slate-900 font-medium focus:border-teal-600 focus:outline-hidden"
                       >
-                        {STANDARD_DOSAGE_UNITS.map((u) => (
-                          <option key={u} value={u}>{u}</option>
+                        {UNIFIED_DOSAGE_TYPES.map((opt) => (
+                          <option key={opt.type} value={opt.type}>
+                            {opt.label}
+                          </option>
                         ))}
                       </select>
                     </div>
@@ -574,14 +684,20 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
                       <label className="block text-2xs font-bold text-slate-700 mb-1">
                         Ilość na 1 zażycie
                       </label>
-                      <input
-                        type="text"
-                        value={doseAmount}
-                        onChange={(e) => setDoseAmount(e.target.value)}
-                        placeholder="np. 1, 2, 500 mg"
-                        className="w-full px-3 py-2 bg-white rounded-xl border border-slate-300 text-xs text-slate-900 font-bold focus:border-teal-600 focus:outline-hidden"
-                        required
-                      />
+                      <div className="relative">
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={doseAmount}
+                          onChange={(e) => setDoseAmount(e.target.value)}
+                          placeholder="np. 1, 2, 5"
+                          className="w-full pl-3 pr-12 py-2 bg-white rounded-xl border border-slate-300 text-xs text-slate-900 font-bold focus:border-teal-600 focus:outline-hidden"
+                          required
+                        />
+                        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-500">
+                          {currentShortUnit}
+                        </span>
+                      </div>
                     </div>
                   </div>
 
@@ -596,7 +712,9 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
                       className="w-full px-3 py-2 bg-white rounded-xl border border-slate-300 text-xs text-slate-900 font-semibold focus:border-teal-600 focus:outline-hidden"
                     >
                       {STANDARD_FREQUENCIES.map((f) => (
-                        <option key={f.id} value={f.id}>{f.label}</option>
+                        <option key={f.id} value={f.id}>
+                          {f.label}
+                        </option>
                       ))}
                       <option value="custom">Niestandardowa / własne godziny</option>
                     </select>
@@ -606,11 +724,9 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
                   <div>
                     <div className="flex items-center justify-between text-2xs font-bold text-slate-700 mb-1">
                       <span>Godziny przypomnień alarmowych:</span>
-                      <span className="text-3xs font-medium text-slate-500">
-                        {times.join(', ')}
-                      </span>
+                      <span className="text-3xs font-medium text-slate-500">{times.join(', ')}</span>
                     </div>
-                    <div className="flex flex-wrap gap-1.5">
+                    <div className="flex flex-wrap gap-1.5 mb-2">
                       {times.map((t, idx) => (
                         <span
                           key={idx}
@@ -630,18 +746,140 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
                           )}
                         </span>
                       ))}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="time"
+                        value={newTimeInput}
+                        onChange={(e) => setNewTimeInput(e.target.value)}
+                        className="px-2.5 py-1 bg-white border border-slate-300 rounded-lg text-xs font-semibold text-slate-900"
+                      />
                       <button
                         type="button"
                         onClick={() => {
-                          const newTime = prompt('Wpisz godzinę w formacie GG:MM (np. 14:30):', '14:00');
-                          if (newTime && !times.includes(newTime)) {
-                            setTimes([...times, newTime].sort());
+                          if (newTimeInput && !times.includes(newTimeInput)) {
+                            setTimes([...times, newTimeInput].sort());
+                            setSelectedFreqId('custom');
                           }
                         }}
-                        className="px-2 py-1 bg-white border border-slate-300 hover:border-teal-600 text-slate-700 rounded-lg text-2xs font-bold flex items-center gap-1"
+                        className="px-2.5 py-1.5 bg-white border border-slate-300 hover:border-teal-600 text-slate-700 rounded-lg text-2xs font-bold flex items-center gap-1"
                       >
                         <Plus className="w-3 h-3" /> Dodaj porę
                       </button>
+                    </div>
+                  </div>
+
+                  {/* Harmonogram i dni tygodnia */}
+                  <div>
+                    <label className="block text-2xs font-bold text-slate-700 mb-1.5 flex items-center gap-1">
+                      <Calendar className="w-3.5 h-3.5 text-slate-500" /> Harmonogram przyjmowania
+                    </label>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {[
+                        { id: 'daily', label: 'Codziennie' },
+                        { id: 'specific_days', label: 'Dni tygodnia' },
+                        { id: 'date_range', label: 'Przedział dat' },
+                      ].map((sch) => (
+                        <button
+                          key={sch.id}
+                          type="button"
+                          onClick={() => {
+                            setScheduleType(sch.id as ScheduleType);
+                            setFormError(null);
+                          }}
+                          className={`py-1.5 px-2 text-[11px] font-bold rounded-lg border transition-colors ${
+                            scheduleType === sch.id
+                              ? 'bg-teal-50 border-teal-600 text-teal-800'
+                              : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          {sch.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {scheduleType === 'specific_days' && (
+                      <div className="mt-2 p-2.5 bg-white rounded-xl border border-slate-200">
+                        <span className="text-[10px] font-bold text-slate-600 block mb-1.5">
+                          Wybierz dni tygodnia:
+                        </span>
+                        <div className="flex items-center justify-between gap-1">
+                          {WEEKDAYS.map((w) => {
+                            const checked = selectedDays.includes(w.id);
+                            return (
+                              <button
+                                key={w.id}
+                                type="button"
+                                onClick={() => toggleDay(w.id)}
+                                aria-label={`Dzień ${w.fullName}`}
+                                className={`w-8 h-8 rounded-lg text-[11px] font-bold transition-colors ${
+                                  checked
+                                    ? 'bg-teal-600 text-white shadow-2xs'
+                                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                }`}
+                              >
+                                {w.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Zakres dat stosowania (opcjonalnie) */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-2xs font-bold text-slate-700">Od daty (opcj.)</label>
+                        {startDate && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setStartDate('');
+                              setFormError(null);
+                            }}
+                            className="text-[10px] font-bold text-teal-700 hover:underline"
+                          >
+                            Wyczyść
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        type="date"
+                        value={startDate}
+                        onChange={(e) => {
+                          setStartDate(e.target.value);
+                          setFormError(null);
+                        }}
+                        className="w-full px-2.5 py-1.5 bg-white rounded-xl border border-slate-300 text-xs text-slate-900"
+                      />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-2xs font-bold text-slate-700">Do daty (opcj.)</label>
+                        {endDate && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEndDate('');
+                              setFormError(null);
+                            }}
+                            className="text-[10px] font-bold text-teal-700 hover:underline"
+                          >
+                            Wyczyść
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        type="date"
+                        value={endDate}
+                        onChange={(e) => {
+                          setEndDate(e.target.value);
+                          setFormError(null);
+                        }}
+                        className="w-full px-2.5 py-1.5 bg-white rounded-xl border border-slate-300 text-xs text-slate-900"
+                      />
                     </div>
                   </div>
 
@@ -659,15 +897,16 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
                     />
                   </div>
 
-                  {/* 5. Domowa Apteczka: wielkość opakowania i termin ważności */}
+                  {/* 5. Domowa Apteczka */}
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="block text-2xs font-bold text-slate-700 mb-1">
-                        Ilość w opakowaniu
+                        Ilość w opakowaniu ({currentShortUnit})
                       </label>
                       <input
                         type="number"
                         min="1"
+                        step="any"
                         value={packageSize}
                         onChange={(e) => setPackageSize(e.target.value)}
                         placeholder="np. 30"
@@ -687,6 +926,13 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
                     </div>
                   </div>
 
+                  {formError && (
+                    <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{formError}</span>
+                    </div>
+                  )}
+
                   {/* Przycisk akcji */}
                   <div className="pt-2">
                     <button
@@ -704,14 +950,12 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
                   <Pill className="w-10 h-10 mb-2 text-slate-300" />
                   <p className="text-xs font-bold text-slate-700">Wybierz lek z listy po lewej</p>
                   <p className="text-2xs text-slate-500 mt-1 max-w-xs">
-                    Wybierz lek z bazy URPL/NFZ, aby dostosować jednostkę dawkowania (np. tabl., krople, ml), częstotliwość zażywania i zapisać go do swojej terapii.
+                    Wybierz lek z bazy URPL/NFZ, aby dostosować jednostkę dawkowania (tabl., kropli, ml, wziew, aplik.), dni tygodnia i zapisać go do swojej terapii.
                   </p>
                 </div>
               )}
             </div>
-
           </div>
-
         </div>
 
         {/* Dolna belka informacyjna */}
@@ -728,7 +972,6 @@ export const DrugDatabaseOverlay: React.FC<DrugDatabaseOverlayProps> = ({
             Zamknij
           </button>
         </div>
-
       </div>
     </div>
   );

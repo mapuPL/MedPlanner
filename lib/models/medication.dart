@@ -98,7 +98,52 @@ class Medication {
     this.expiryDate,
   });
 
-  String formatDose() => '$doseAmount ${type.shortUnit}';
+  Medication copyWith({
+    String? id,
+    String? therapyId,
+    String? name,
+    MedicationType? type,
+    String? doseAmount,
+    String? instructions,
+    bool clearInstructions = false,
+    List<String>? times,
+    ScheduleType? scheduleType,
+    List<int>? selectedDays,
+    DateTime? startDate,
+    DateTime? endDate,
+    bool clearEndDate = false,
+    double? stockQuantity,
+    double? packageSize,
+    double? lowStockThreshold,
+    DateTime? expiryDate,
+    bool clearExpiryDate = false,
+  }) {
+    return Medication(
+      id: id ?? this.id,
+      therapyId: therapyId ?? this.therapyId,
+      name: name ?? this.name,
+      type: type ?? this.type,
+      doseAmount: doseAmount ?? this.doseAmount,
+      instructions: clearInstructions ? null : (instructions ?? this.instructions),
+      times: times ?? this.times,
+      scheduleType: scheduleType ?? this.scheduleType,
+      selectedDays: selectedDays ?? this.selectedDays,
+      startDate: startDate ?? this.startDate,
+      endDate: clearEndDate ? null : (endDate ?? this.endDate),
+      stockQuantity: stockQuantity ?? this.stockQuantity,
+      packageSize: packageSize ?? this.packageSize,
+      lowStockThreshold: lowStockThreshold ?? this.lowStockThreshold,
+      expiryDate: clearExpiryDate ? null : (expiryDate ?? this.expiryDate),
+    );
+  }
+
+  String formatDose() {
+    final trimmed = doseAmount.trim();
+    if (RegExp(r'[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]').hasMatch(trimmed)) {
+      return trimmed;
+    }
+    return '$trimmed ${type.shortUnit}';
+  }
 
   bool get isLowStock => stockQuantity != null && stockQuantity! <= lowStockThreshold;
 
@@ -159,4 +204,3 @@ class Medication {
     );
   }
 }
-

@@ -4,6 +4,7 @@ import '../models/medication.dart';
 import '../models/user_profile.dart';
 import '../services/database_service.dart';
 import '../widgets/profile_manager_sheet.dart';
+import '../widgets/therapy_pdf_report_sheet.dart';
 import 'add_therapy_screen.dart';
 import 'add_medication_screen.dart';
 
@@ -71,6 +72,24 @@ class _TherapiesScreenState extends State<TherapiesScreen> {
     if (result == true || mounted) {
       _loadData();
     }
+  }
+
+  Future<void> _toggleTherapyStatus(Therapy therapy) async {
+    final nextActive = !therapy.isActive;
+    await DatabaseService.instance.setTherapyActive(therapy, nextActive);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          nextActive
+              ? 'Wznowiono terapię: ${therapy.name}'
+              : 'Wstrzymano terapię "${therapy.name}" (historia zachowana)',
+        ),
+        backgroundColor: Colors.teal.shade800,
+        duration: const Duration(seconds: 3),
+      ),
+    );
+    _loadData();
   }
 
   Future<void> _deleteTherapy(Therapy therapy) async {
@@ -142,17 +161,250 @@ class _TherapiesScreenState extends State<TherapiesScreen> {
     }
   }
 
+  Widget _buildTherapyCard(Therapy therapy) {
+    final meds = _medications.where((m) => m.therapyId == therapy.id).toList();
+    final isPaused = !therapy.isActive;
+    Color therapyColor;
+    try {
+      therapyColor = Color(int.parse(therapy.colorHex.replaceFirst('#', '0xFF')));
+    } catch (_) {
+      therapyColor = Colors.teal;
+    }
+
+    String? dateSummary;
+    if (therapy.startDate != null && therapy.endDate != null) {
+      dateSummary =
+          'Okres: ${DatabaseService.formatLocalDate(therapy.startDate!)} – ${DatabaseService.formatLocalDate(therapy.endDate!)}';
+    } else if (therapy.startDate != null) {
+      dateSummary = 'Od: ${DatabaseService.formatLocalDate(therapy.startDate!)}';
+    } else if (therapy.endDate != null) {
+      dateSummary = 'Do: ${DatabaseService.formatLocalDate(therapy.endDate!)}';
+    }
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 14),
+      elevation: 0,
+      color: isPaused ? Colors.grey.shade50 : Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: isPaused ? Colors.grey.shade300 : Colors.grey.shade200),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 14,
+                  height: 14,
+                  margin: const EdgeInsets.only(top: 4),
+                  decoration: BoxDecoration(
+                    color: isPaused ? Colors.grey.shade400 : therapyColor,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        therapy.name,
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                          color: isPaused ? Colors.grey.shade700 : Colors.black87,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        isPaused
+                            ? 'Profil: ${therapy.profileName} · Wstrzymana'
+                            : 'Profil: ${therapy.profileName} · Aktywna',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: isPaused ? Colors.amber.shade900 : Colors.teal.shade700,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      if (dateSummary != null) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          dateSummary,
+                          style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                if (isPaused)
+                  FilledButton.tonalIcon(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.teal.shade50,
+                      foregroundColor: Colors.teal.shade800,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    icon: const Icon(Icons.play_arrow, size: 17),
+                    label: const Text('Wznów', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    onPressed: () => _toggleTherapyStatus(therapy),
+                  )
+                else
+                  IconButton(
+                    icon: const Icon(Icons.pause_circle_outline, size: 21, color: Colors.amber),
+                    tooltip: 'Wstrzymaj terapię',
+                    onPressed: () => _toggleTherapyStatus(therapy),
+                  ),
+                IconButton(
+                  icon: const Icon(Icons.edit_outlined, size: 20, color: Colors.grey),
+                  tooltip: 'Edytuj terapię',
+                  onPressed: () => _openAddTherapy(therapy),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.delete_outline, size: 20, color: Colors.redAccent),
+                  tooltip: 'Usuń terapię',
+                  onPressed: () => _deleteTherapy(therapy),
+                ),
+              ],
+            ),
+            if (therapy.description != null && therapy.description!.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                therapy.description!,
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+              ),
+            ],
+            const SizedBox(height: 12),
+            const Divider(height: 1),
+            const SizedBox(height: 10),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Przypisane leki (${meds.length})',
+                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                ),
+                TextButton.icon(
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    foregroundColor: Colors.teal,
+                  ),
+                  icon: const Icon(Icons.add, size: 16),
+                  label: const Text('Dodaj lek'),
+                  onPressed: () async {
+                    await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => AddMedicationScreen(initialTherapyId: therapy.id),
+                      ),
+                    );
+                    _loadData();
+                  },
+                ),
+              ],
+            ),
+            if (meds.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Column(
+                children: meds.map((m) {
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.grey.shade200),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: isPaused ? Colors.grey.shade100 : Colors.teal.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Icon(
+                            Icons.medication_outlined,
+                            size: 18,
+                            color: isPaused ? Colors.grey.shade600 : Colors.teal.shade700,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                m.name,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13,
+                                  color: isPaused ? Colors.grey.shade700 : Colors.black87,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Dawka: ${m.formatDose()} • Godziny: ${m.times.join(", ")}',
+                                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.edit_outlined, size: 18, color: Colors.teal),
+                          tooltip: 'Edytuj lek',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () async {
+                            await Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => AddMedicationScreen(existingMedication: m),
+                              ),
+                            );
+                            _loadData();
+                          },
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+                          tooltip: 'Usuń lek z terapii',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => _deleteMedicationFromTherapy(m, therapy.name),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final displayedTherapies = _selectedProfile == null
         ? _therapies
         : _therapies.where((t) => t.profileName == _selectedProfile).toList();
+    final activeTherapies = displayedTherapies.where((t) => t.isActive).toList();
+    final pausedTherapies = displayedTherapies.where((t) => !t.isActive).toList();
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
         title: const Text('Moje Terapie', style: TextStyle(fontWeight: FontWeight.bold)),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.picture_as_pdf_outlined, color: Colors.teal),
+            tooltip: 'Raport Terapii PDF',
+            onPressed: () => TherapyPdfReportSheet.show(
+              context,
+              initialProfileName: _selectedProfile,
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.people_outline, color: Colors.teal),
             tooltip: 'Zarządzaj użytkownikami',
@@ -223,160 +475,49 @@ class _TherapiesScreenState extends State<TherapiesScreen> {
                             ),
                           ),
                         )
-                      : ListView.builder(
-                          padding: const EdgeInsets.all(16),
-                          itemCount: displayedTherapies.length,
-                          itemBuilder: (ctx, i) {
-                            final therapy = displayedTherapies[i];
-                    final meds = _medications.where((m) => m.therapyId == therapy.id).toList();
-                    Color therapyColor;
-                    try {
-                      therapyColor = Color(int.parse(therapy.colorHex.replaceFirst('#', '0xFF')));
-                    } catch (_) {
-                      therapyColor = Colors.teal;
-                    }
-
-                    return Card(
-                      margin: const EdgeInsets.only(bottom: 14),
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                        side: BorderSide(color: Colors.grey.shade200),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                      : ListView(
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 88),
                           children: [
-                            Row(
-                              children: [
-                                Container(
-                                  width: 16,
-                                  height: 16,
-                                  decoration: BoxDecoration(
-                                    color: therapyColor,
-                                    shape: BoxShape.circle,
+                            if (activeTherapies.isNotEmpty) ...[
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 10, left: 4),
+                                child: Text(
+                                  'Aktywne terapie (${activeTherapies.length})',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.teal.shade800,
                                   ),
                                 ),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        therapy.name,
-                                        style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-                                      ),
-                                      Text(
-                                        'Profil: ${therapy.profileName}',
-                                        style: TextStyle(fontSize: 11, color: Colors.teal.shade700, fontWeight: FontWeight.w600),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.edit_outlined, size: 20, color: Colors.grey),
-                                  onPressed: () => _openAddTherapy(therapy),
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.delete_outline, size: 20, color: Colors.redAccent),
-                                  onPressed: () => _deleteTherapy(therapy),
-                                ),
-                              ],
-                            ),
-                            if (therapy.description != null && therapy.description!.isNotEmpty) ...[
-                              const SizedBox(height: 6),
-                              Text(
-                                therapy.description!,
-                                style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
                               ),
+                              ...activeTherapies.map(_buildTherapyCard),
                             ],
-                            const SizedBox(height: 12),
-                            const Divider(height: 1),
-                            const SizedBox(height: 10),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Text(
-                                  'Przypisane leki (${meds.length})',
-                                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                            if (pausedTherapies.isNotEmpty) ...[
+                              Padding(
+                                padding: EdgeInsets.only(
+                                  top: activeTherapies.isNotEmpty ? 12 : 0,
+                                  bottom: 10,
+                                  left: 4,
                                 ),
-                                TextButton.icon(
-                                  style: TextButton.styleFrom(
-                                    visualDensity: VisualDensity.compact,
-                                    foregroundColor: Colors.teal,
-                                  ),
-                                  icon: const Icon(Icons.add, size: 16),
-                                  label: const Text('Dodaj lek'),
-                                  onPressed: () async {
-                                    await Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) => AddMedicationScreen(initialTherapyId: therapy.id),
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.pause_circle_outline, size: 16, color: Colors.grey.shade700),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      'Zarchiwizowane / Wstrzymane (${pausedTherapies.length})',
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w800,
+                                        color: Colors.grey.shade700,
                                       ),
-                                    );
-                                    _loadData();
-                                  },
+                                    ),
+                                  ],
                                 ),
-                              ],
-                            ),
-                            if (meds.isNotEmpty) ...[
-                              const SizedBox(height: 8),
-                              Column(
-                                children: meds.map((m) {
-                                  return Container(
-                                    margin: const EdgeInsets.only(bottom: 6),
-                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white,
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(color: Colors.grey.shade200),
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        Container(
-                                          padding: const EdgeInsets.all(6),
-                                          decoration: BoxDecoration(
-                                            color: Colors.teal.shade50,
-                                            borderRadius: BorderRadius.circular(8),
-                                          ),
-                                          child: Icon(Icons.medication_outlined, size: 18, color: Colors.teal.shade700),
-                                        ),
-                                        const SizedBox(width: 10),
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Text(
-                                                m.name,
-                                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                                              ),
-                                              const SizedBox(height: 2),
-                                              Text(
-                                                'Dawka: ${m.formatDose()} • Godziny: ${m.times.join(", ")}',
-                                                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                        IconButton(
-                                          icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
-                                          tooltip: 'Usuń lek z terapii',
-                                          visualDensity: VisualDensity.compact,
-                                          onPressed: () => _deleteMedicationFromTherapy(m, therapy.name),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                }).toList(),
                               ),
+                              ...pausedTherapies.map(_buildTherapyCard),
                             ],
                           ],
                         ),
-                      ),
-                    );
-                  },
-                ),
                 ),
               ],
             ),
